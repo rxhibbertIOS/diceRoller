@@ -70,6 +70,7 @@
  * - Preserved backwards compatibility for notation.result.
  * - Added notation.diceResults for rich result information.
  * - Updated stringify_notation() to preserve rules.
+ * - Added feature to change colour of 'dropped' dice.
  */
 
 
@@ -960,6 +961,11 @@ const DICE = (function() {
                             diceResults
                         );
 
+                    /** apply the visuals change for dropped dice */
+                    apply_dropped_visuals(notation.diceResults, box.dices);
+
+                    // Force a render to show the updated dropped dice visuals
+                    box.renderer.render(box.scene, box.camera);
 
                     /*
                      * Preserve the original public API:
@@ -1304,11 +1310,12 @@ const DICE = (function() {
         // Material colour set to white so the texture appears un‑tinted
         var materialOptions = $t.copyto(vars.material_options, { color: 0xffffff });
         var bodyColor = color;
+        var labelColor = vars.label_color;
 
         var materials;
         if (type === 'd4') {
             // Use default d4 label variant (index 0)
-            materials = create_d4_materials(size, vars.scale * 2, CONSTS.d4_labels[0], materialOptions, bodyColor);
+            materials = create_d4_materials(size, vars.scale * 2, CONSTS.d4_labels[0], materialOptions, bodyColor, labelColor);
         } else {
             switch (type) {
                 case 'd6':
@@ -1340,7 +1347,7 @@ const DICE = (function() {
                     face_labels = CONSTS.standart_d20_dice_face_labels;
                     margin = 1.0;
             }
-            materials = create_dice_materials(face_labels, size, margin, materialOptions, bodyColor);
+            materials = create_dice_materials(face_labels, size, margin, materialOptions, bodyColor, labelColor);
         }
 
         var dice = new THREE.Mesh(geometry, new THREE.MeshFaceMaterial(materials));
@@ -1356,6 +1363,10 @@ const DICE = (function() {
         // Store the body colour so that we can reuse it when shifting faces
         dice.body_color = bodyColor;
 
+        // For d4, store which label variant is currently used (default = 0)
+        if (type === 'd4') {
+            dice.d4_variant = 0;
+        }
 
         dice.body =
             new CANNON.RigidBody(
@@ -2813,6 +2824,65 @@ const DICE = (function() {
 
 
     /**
+     * Applies visual changes to dropped dice (those with kept === false).
+     * Changes both the die body colour and the label colour to the dropped variants.
+     *
+     * @param {Object[]} diceResults - Array of rich result objects.
+     * @param {THREE.Mesh[]} dices - Array of Three.js dice meshes.
+     */
+    function apply_dropped_visuals(diceResults, dices) {
+        // Build a map for quick lookup by diceId
+        var resultMap = {};
+        for (var i = 0; i < diceResults.length; i++) {
+            resultMap[diceResults[i].diceId] = diceResults[i];
+        }
+
+        var droppedCount = 0;
+        for (var i = 0; i < dices.length; i++) {
+            var dice = dices[i];
+            var result = resultMap[dice.dice_id];
+            if (!result) continue;
+
+            // Only change if not kept
+            if (!result.kept) {
+                droppedCount++;
+                console.log('Dice Roll: Dropping die', dice.dice_id, 'type', dice.dice_type, 'value', result.value);
+                var type = dice.dice_type;
+                var geometry = dice.geometry; // keep existing geometry
+                var size = vars.scale / 2;
+                var margin;
+                var face_labels;
+                var materialOptions = $t.copyto(vars.material_options, { color: 0xffffff });
+                var bodyColor = vars.dropped_dice_color;
+                var labelColor = vars.dropped_dice_label_color;
+
+                var materials;
+                if (type === 'd4') {
+                    // Use the stored variant (or default 0)
+                    var variant = (dice.d4_variant !== undefined) ? dice.d4_variant : 0;
+                    materials = create_d4_materials(size, vars.scale * 2, CONSTS.d4_labels[variant], materialOptions, bodyColor, labelColor);
+                } else {
+                    switch (type) {
+                        case 'd6':  face_labels = CONSTS.standart_d20_dice_face_labels; margin = 0.9; break;
+                        case 'd8':  face_labels = CONSTS.standart_d20_dice_face_labels; margin = 1.4; break;
+                        case 'd10': case 'd9': face_labels = CONSTS.standart_d20_dice_face_labels; margin = 1.0; break;
+                        case 'd12': face_labels = CONSTS.standart_d20_dice_face_labels; margin = 1.0; break;
+                        case 'd20': face_labels = CONSTS.standart_d20_dice_face_labels; margin = 1.2; break;
+                        case 'd100': face_labels = CONSTS.standart_d100_dice_face_labels; margin = 1.5; break;
+                        default: face_labels = CONSTS.standart_d20_dice_face_labels; margin = 1.0;
+                    }
+                    materials = create_dice_materials(face_labels, size, margin, materialOptions, bodyColor, labelColor);
+                }
+
+                // Replace the material
+                dice.material = new THREE.MeshFaceMaterial(materials);
+                // Mark that we've applied dropped visuals (so we don't re-apply unnecessarily)
+                dice.dropped_visuals_applied = true;
+            }
+        }
+        console.log('Dice Roll: Dropped', droppedCount, 'dice.');
+    }
+    /**
      * Calculates the final numeric result.
      *
      * Only dice marked as kept contribute to the total.
@@ -3213,10 +3283,12 @@ const DICE = (function() {
         size,
         margin,
         materialOptions,
-        bodyColor
+        bodyColor,
+        labelColor
     ) {
         materialOptions = materialOptions || vars.material_options;
         bodyColor = bodyColor || vars.dice_color;
+        labelColor = labelColor || vars.label_color;
 
         /**
          * Creates a text texture for one die face.
@@ -3344,7 +3416,7 @@ const DICE = (function() {
                             map:
                                 create_text_texture(
                                     face_labels[i],
-                                    vars.label_color,
+                                    labelColor,
                                     bg
                                 )
                         }
@@ -3373,10 +3445,12 @@ const DICE = (function() {
         margin,
         labels,
         materialOptions,
-        bodyColor
+        bodyColor, 
+        labelColor
     ) {
         materialOptions = materialOptions || vars.material_options;
         bodyColor = bodyColor || vars.dice_color;
+        labelColor = labelColor || vars.label_color;
 
         /**
          * Creates the special triangular d4 texture.
@@ -3502,7 +3576,7 @@ const DICE = (function() {
                             map:
                                 create_d4_text(
                                     labels[i],
-                                    vars.label_color,
+                                    labelColor,
                                     bg
                                 )
                         }
@@ -4832,14 +4906,13 @@ const DICE = (function() {
          * the triangular labels depend on orientation.
          * Use the stored body colour.
          */
-        if (
-            dice.dice_type == 'd4' &&
-            num != 0
-        ) {
-
+        if (dice.dice_type == 'd4' && num != 0) {
             if (num < 0) {
                 num += 4;
             }
+
+            // Store the new variant number on the die
+            dice.d4_variant = num;
 
             var materialOptions = $t.copyto(vars.material_options, { color: 0xffffff });
             dice.material =
@@ -4849,7 +4922,7 @@ const DICE = (function() {
                         vars.scale * 2,
                         CONSTS.d4_labels[num],
                         materialOptions,
-                        dice.body_color   // use the colour we stored on the die
+                        dice.body_color
                     )
                 );
         }
