@@ -93,6 +93,52 @@ const DICE = (function() {
 
 
     /**
+     * Error codes and their user‑friendly messages.
+     * @enum {string}
+     */
+    var DICE_ERRORS = {
+        INVALID_NOTATION: 'Invalid dice notation – please check the syntax.',
+        EMPTY_NOTATION: 'No dice notation provided.',
+        NO_DICE: 'No dice were specified in the notation.',
+        UNSUPPORTED_DIE: 'Unsupported die type. Use d4, d6, d8, d10, d12, d20, or d100.',
+        ZERO_DICE: 'Number of dice must be at least 1.',
+        TOO_MANY_DICE_PER_GROUP: 'Maximum 10 dice per group allowed.',
+        TOO_MANY_GROUPS: 'Maximum 10 groups allowed per roll.',
+        INVALID_RULE: 'The keep/drop rule is malformed or uses an unsupported type.',
+        RULE_COUNT_EXCEEDS_DICE: 'The rule count cannot exceed the number of dice in the group.',
+        NEGATIVE_DICE_TERM: 'Dice terms cannot be negative.',
+        VECTOR_GENERATION_FAILED: 'Failed to generate the physical dice vectors.',
+        RENDER_FAILED: 'An error occurred during rendering or physics.',
+        CALLBACK_ERROR: 'An error occurred in a user callback (before_roll or after_roll).',
+    };
+
+
+    /**
+     * Creates a structured error object for the dice engine.
+     *
+     * @param {string} code - One of the keys in DICE_ERRORS.
+     * @param {string} [customMessage] - Optional override for the user message.
+     * @param {Error} [originalError] - The original caught error (to preserve stack).
+     * @returns {Error} A new Error object with additional properties.
+     */
+    function createDiceError(code, customMessage, originalError) {
+        var userMsg = DICE_ERRORS[code] || 'An unknown error occurred.';
+        if (customMessage) {
+            userMsg = customMessage;
+        }
+        var err = new Error(userMsg);
+        err.code = code;
+        err.userMessage = userMsg;
+        if (originalError) {
+            err.stack = originalError.stack;
+            err.originalError = originalError;
+        }
+        console.error('Dice Roll: [' + code + '] ' + userMsg, err);
+        return err;
+    }
+
+
+    /**
      * Internal rendering and physics configuration.
      *
      * These values currently remain internal to the library. The longer-term
@@ -702,30 +748,53 @@ const DICE = (function() {
             return;
         }
 
+        try {
 
-        var vector = {
-            x: (rnd() * 2 - 1) * box.w,
-            y: -(rnd() * 2 - 1) * box.h
-        };
-
-
-        var dist = Math.sqrt(
-            vector.x * vector.x +
-            vector.y * vector.y
-        );
+            var vector = {
+                x: (rnd() * 2 - 1) * box.w,
+                y: -(rnd() * 2 - 1) * box.h
+            };
 
 
-        var boost = (rnd() + 3) * dist;
+            var dist = Math.sqrt(
+                vector.x * vector.x +
+                vector.y * vector.y
+            );
 
 
-        throw_dices(
-            box,
-            vector,
-            boost,
-            dist,
-            before_roll,
-            after_roll
-        );
+            var boost = (rnd() + 3) * dist;
+
+
+            throw_dices(
+                box,
+                vector,
+                boost,
+                dist,
+                before_roll,
+                after_roll
+            );
+        } catch (e) {
+            // If an unexpected error occurs, wrap it and call after_roll with error notation.
+            var err = createDiceError('RENDER_FAILED', null, e);
+            var errorNotation = {
+                error: true,
+                errorCode: err.code,
+                errorMessage: err.userMessage,
+                errorStack: err.stack,
+                groups: [],
+                set: [],
+                constant: 0,
+                result: [],
+                diceResults: [],
+                resultTotal: 0,
+                resultString: ''
+            };
+            if (after_roll) {
+                after_roll(errorNotation);
+            } else {
+                console.error('Dice Roll: Unhandled error in start_throw', err);
+            }
+        }
     };
 
 
@@ -881,11 +950,26 @@ const DICE = (function() {
 
         console.log('Dice Roll: Parsed notation:', notation);
 
+        // Check for parse errors
+        if (notation.error) {
+            console.warn('Dice Roll: Parsing failed – aborting roll.', notation.errorMessage);
+            if (after_roll) {
+                after_roll(notation);
+            }
+            return;
+        }
+
         /*
          * No physical dice means there is nothing to animate.
          */
         if (notation.set.length == 0) {
+            notation.error = true;
+            notation.errorCode = 'NO_DICE';
+            notation.errorMessage = DICE_ERRORS.NO_DICE;
             console.warn('Dice Roll: No dice to roll, aborting.');
+            if (after_roll) {
+                after_roll(notation);
+            }
             return;
         }
 
@@ -897,11 +981,24 @@ const DICE = (function() {
          * physical dice while retaining group metadata.
          * For compound d100 groups, it generates TWO physical vectors per die.
          */
-        var vectors = box.generate_vectors(
-            notation,
-            vector,
-            boost
-        );
+        try {
+            var vectors = box.generate_vectors(
+                notation,
+                vector,
+                boost
+            );
+        } catch (e) {
+            var err = createDiceError('VECTOR_GENERATION_FAILED', null, e);
+            notation.error = true;
+            notation.errorCode = err.code;
+            notation.errorMessage = err.userMessage;
+            notation.errorStack = err.stack;
+            console.warn('Dice Roll: Failed to generate vectors.', err);
+            if (after_roll) {
+                after_roll(notation);
+            }
+            return;
+        }
         console.log('Dice Roll: Generated ' + vectors.length + ' physical dice.');
 
 
@@ -923,9 +1020,21 @@ const DICE = (function() {
          * results while still letting the physical dice animate normally.
          */
         if (before_roll) {
-            request_results = before_roll(notation);
-            if (request_results && request_results.length) {
-                console.log('Dice Roll: Forced results provided:', request_results);
+            try {
+                request_results = before_roll(notation);
+                if (request_results && request_results.length) {
+                    console.log('Dice Roll: Forced results provided:', request_results);
+                }
+            } catch (e) {
+                var err = createDiceError('CALLBACK_ERROR', 'Error in before_roll callback', e);
+                notation.error = true;
+                notation.errorCode = err.code;
+                notation.errorMessage = err.userMessage;
+                notation.errorStack = err.stack;
+                if (after_roll) {
+                    after_roll(notation);
+                }
+                return;
             }
         }
 
@@ -941,7 +1050,19 @@ const DICE = (function() {
          */
         function roll(request_results) {
 
-            box.clear();
+            try {
+                box.clear();
+            } catch (e) {
+                var err = createDiceError('RENDER_FAILED', 'Failed to clear dice from scene', e);
+                notation.error = true;
+                notation.errorCode = err.code;
+                notation.errorMessage = err.userMessage;
+                notation.errorStack = err.stack;
+                if (after_roll) {
+                    after_roll(notation);
+                }
+                return;
+            }
 
 
             box.roll(
@@ -961,78 +1082,92 @@ const DICE = (function() {
 
                     console.log('Dice Roll: Physics finished, raw face values:', rawDiceResults);
 
-                    /*
-                     * STEP 1: Combine compound dice (e.g., d100 = tens + units)
-                     * This produces a new array where each entry represents one
-                     * logical die (with a combined value). The original raw
-                     * sub-results are stored for later visual handling.
-                     */
-                    var combinedResults = combine_compound_results(rawDiceResults, box.dices);
+                    try {
 
-                    console.log('Dice Roll: Combined results:', combinedResults);
+                        /*
+                         * STEP 1: Combine compound dice (e.g., d100 = tens + units)
+                         * This produces a new array where each entry represents one
+                         * logical die (with a combined value). The original raw
+                         * sub-results are stored for later visual handling.
+                         */
+                        var combinedResults = combine_compound_results(rawDiceResults, box.dices);
 
-                    /*
-                     * STEP 2: Evaluate keep/drop rules on the combined results.
-                     * This sets the 'kept' flag on each combined entry.
-                     */
-                    var evaluatedCombined = evaluate_results_on_combined(notation, combinedResults);
+                        console.log('Dice Roll: Combined results:', combinedResults);
 
-                    console.log('Dice Roll: After rules (kept flags):', evaluatedCombined);
+                        /*
+                         * STEP 2: Evaluate keep/drop rules on the combined results.
+                         * This sets the 'kept' flag on each combined entry.
+                         */
+                        var evaluatedCombined = evaluate_results_on_combined(notation, combinedResults);
 
-                    /*
-                     * STEP 3: Apply dropped visuals to both physical dice of each dropped compound.
-                     * This greys out all sub-dice of any dropped compound.
-                     */
-                    apply_dropped_visuals_to_compound(evaluatedCombined, box.dices);
+                        console.log('Dice Roll: After rules (kept flags):', evaluatedCombined);
 
-                    // Force a render to show the updated dropped dice visuals
-                    box.renderer.render(box.scene, box.camera);
+                        /*
+                         * STEP 3: Apply dropped visuals to both physical dice of each dropped compound.
+                         * This greys out all sub-dice of any dropped compound.
+                         */
+                        apply_dropped_visuals_to_compound(evaluatedCombined, box.dices);
 
-                    /*
-                     * STEP 4: Build the final notation object.
-                     * We need to produce notation.diceResults as an array of rich result objects
-                     * for each logical die (combined), and notation.result as kept values.
-                     */
-                    notation.diceResults = evaluatedCombined;   // each entry is a combined die result
+                        // Force a render to show the updated dropped dice visuals
+                        box.renderer.render(box.scene, box.camera);
 
-                    // Build the backwards-compatible numeric array of kept values
-                    notation.result = [];
-                    for (var i = 0; i < notation.diceResults.length; i++) {
-                        if (notation.diceResults[i].kept) {
-                            notation.result.push(notation.diceResults[i].value);
+                        /*
+                         * STEP 4: Build the final notation object.
+                         * We need to produce notation.diceResults as an array of rich result objects
+                         * for each logical die (combined), and notation.result as kept values.
+                         */
+                        notation.diceResults = evaluatedCombined;   // each entry is a combined die result
+
+                        // Build the backwards-compatible numeric array of kept values
+                        notation.result = [];
+                        for (var i = 0; i < notation.diceResults.length; i++) {
+                            if (notation.diceResults[i].kept) {
+                                notation.result.push(notation.diceResults[i].value);
+                            }
                         }
-                    }
 
-                    // Calculate total (kept values + constant)
-                    notation.resultTotal = calculate_result(notation.diceResults, notation.constant);
+                        // Calculate total (kept values + constant)
+                        notation.resultTotal = calculate_result(notation.diceResults, notation.constant);
 
-                    // Build the result string (same as before)
-                    var values = [];
-                    for (var i = 0; i < notation.result.length; i++) {
-                        values.push(notation.result[i]);
-                    }
-                    var res = values.join(' ');
-                    if (notation.constant) {
-                        if (notation.constant > 0) {
-                            res += ' +' + notation.constant;
-                        } else {
-                            res += ' -' + Math.abs(notation.constant);
+                        // Build the result string (same as before)
+                        var values = [];
+                        for (var i = 0; i < notation.result.length; i++) {
+                            values.push(notation.result[i]);
                         }
-                    }
-                    if (values.length > 1 || notation.constant) {
-                        res += ' = ' + notation.resultTotal;
-                    }
-                    notation.resultString = res;
+                        var res = values.join(' ');
+                        if (notation.constant) {
+                            if (notation.constant > 0) {
+                                res += ' +' + notation.constant;
+                            } else {
+                                res += ' -' + Math.abs(notation.constant);
+                            }
+                        }
+                        if (values.length > 1 || notation.constant) {
+                            res += ' = ' + notation.resultTotal;
+                        }
+                        notation.resultString = res;
 
-                    console.log('Dice Roll: Final result string:', res);
-                    console.log('Dice Roll: Detailed dice results:', notation.diceResults);
+                        console.log('Dice Roll: Final result string:', res);
+                        console.log('Dice Roll: Detailed dice results:', notation.diceResults);
 
-                    if (after_roll) {
-                        after_roll(notation);
+                        if (after_roll) {
+                            after_roll(notation);
+                        }
+
+                        box.rolling = false;
+                        vars.use_adaptive_timestep = uat;
+                    } catch (e) {
+                        var err = createDiceError('RENDER_FAILED', 'Error during result evaluation or rendering', e);
+                        notation.error = true;
+                        notation.errorCode = err.code;
+                        notation.errorMessage = err.userMessage;
+                        notation.errorStack = err.stack;
+                        if (after_roll) {
+                            after_roll(notation);
+                        }
+                        box.rolling = false;
+                        vars.use_adaptive_timestep = uat;
                     }
-
-                    box.rolling = false;
-                    vars.use_adaptive_timestep = uat;
                 }
             );
         }
@@ -1993,7 +2128,10 @@ const DICE = (function() {
 
             resultTotal: 0,
             resultString: '',
-            error: false
+            error: false,
+            errorCode: null,
+            errorMessage: null,
+            errorStack: null
         };
 
 
@@ -2007,6 +2145,7 @@ const DICE = (function() {
             'd4',
             'd6',
             'd8',
+            'd9',
             'd10',
             'd12',
             'd20',
@@ -2023,6 +2162,8 @@ const DICE = (function() {
         ) {
 
             ret.error = true;
+            ret.errorCode = 'EMPTY_NOTATION';
+            ret.errorMessage = DICE_ERRORS.EMPTY_NOTATION;
             console.warn('Dice Roll: Empty or invalid notation string.');
             return ret;
         }
@@ -2043,6 +2184,8 @@ const DICE = (function() {
 
         if (source.length === 0) {
             ret.error = true;
+            ret.errorCode = 'EMPTY_NOTATION';
+            ret.errorMessage = DICE_ERRORS.EMPTY_NOTATION;
             console.warn('Dice Roll: Notation contains only whitespace after removing @.');
             return ret;
         }
@@ -2078,6 +2221,8 @@ const DICE = (function() {
 
             if (!term) {
                 ret.error = true;
+                ret.errorCode = 'INVALID_NOTATION';
+                ret.errorMessage = DICE_ERRORS.INVALID_NOTATION;
                 continue;
             }
 
@@ -2101,6 +2246,8 @@ const DICE = (function() {
 
             if (!term) {
                 ret.error = true;
+                ret.errorCode = 'INVALID_NOTATION';
+                ret.errorMessage = DICE_ERRORS.INVALID_NOTATION;
                 continue;
             }
 
@@ -2133,6 +2280,8 @@ const DICE = (function() {
                  */
                 if (sign < 0) {
                     ret.error = true;
+                    ret.errorCode = 'NEGATIVE_DICE_TERM';
+                    ret.errorMessage = DICE_ERRORS.NEGATIVE_DICE_TERM + ' (' + term + ')';
                     console.warn('Dice Roll: Negative dice term not allowed:', term);
                     continue;
                 }
@@ -2172,6 +2321,8 @@ const DICE = (function() {
                  */
                 if (count <= 0) {
                     ret.error = true;
+                    ret.errorCode = 'ZERO_DICE';
+                    ret.errorMessage = DICE_ERRORS.ZERO_DICE;
                     console.warn('Dice Roll: Dice count must be > 0.');
                     continue;
                 }
@@ -2181,6 +2332,8 @@ const DICE = (function() {
                  */
                 if (count > 10) {
                     ret.error = true;
+                    ret.errorCode = 'TOO_MANY_DICE_PER_GROUP';
+                    ret.errorMessage = DICE_ERRORS.TOO_MANY_DICE_PER_GROUP + ' (got ' + count + ')';
                     console.warn('Dice Roll: Maximum 10 dice per group (got ' + count + ').');
                     continue;
                 }
@@ -2194,7 +2347,9 @@ const DICE = (function() {
                 ) {
 
                     ret.error = true;
-                    console.warn('Dice Roll: Unsupported dice type:', type);
+                    ret.errorCode = 'UNSUPPORTED_DIE';
+                    ret.errorMessage = DICE_ERRORS.UNSUPPORTED_DIE + ' (' + type + ')';
+                    console.warn('Dice Roll: Unsupported dice type:', type, 'in term:', term);
                     continue;
                 }
 
@@ -2211,6 +2366,8 @@ const DICE = (function() {
                 ) {
 
                     ret.error = true;
+                    ret.errorCode = 'INVALID_RULE';
+                    ret.errorMessage = DICE_ERRORS.INVALID_RULE;
                     console.warn('Dice Roll: Invalid rule count for', term);
                     continue;
                 }
@@ -2226,6 +2383,8 @@ const DICE = (function() {
                 ) {
 
                     ret.error = true;
+                    ret.errorCode = 'RULE_COUNT_EXCEEDS_DICE';
+                    ret.errorMessage = DICE_ERRORS.RULE_COUNT_EXCEEDS_DICE + ' (' + ruleCount + ' > ' + count + ')';
                     console.warn('Dice Roll: Rule count (' + ruleCount + ') exceeds dice count (' + count + ').');
                     continue;
                 }
@@ -2311,10 +2470,12 @@ const DICE = (function() {
                  */
                 if (ret.groups.length > 10) {
                     ret.error = true;
+                    ret.errorCode = 'TOO_MANY_GROUPS';
+                    ret.errorMessage = DICE_ERRORS.TOO_MANY_GROUPS + ' (got ' + ret.groups.length + ')';
                     console.warn('Dice Roll: Maximum 10 groups allowed (got ' + ret.groups.length + ').');
                     // Remove the last group to keep within limit
                     ret.groups.pop();
-                    // Break out of loop? We'll just continue and later mark error.
+                    // Continue parsing but mark error.
                 }
 
 
@@ -2374,6 +2535,8 @@ const DICE = (function() {
              * so callers still receive a safe result object.
              */
             ret.error = true;
+            ret.errorCode = 'INVALID_NOTATION';
+            ret.errorMessage = DICE_ERRORS.INVALID_NOTATION + ' (unrecognised term "' + term + '")';
             console.warn('Dice Roll: Unrecognised term:', term);
         }
 
@@ -2386,6 +2549,8 @@ const DICE = (function() {
          */
         if (ret.set.length === 0) {
             ret.error = true;
+            ret.errorCode = 'NO_DICE';
+            ret.errorMessage = DICE_ERRORS.NO_DICE;
             console.warn('Dice Roll: No dice in notation (constant-only expressions are not allowed).');
         }
 
