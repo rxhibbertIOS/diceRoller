@@ -110,6 +110,8 @@ const DICE = (function() {
 
         label_color: '#aaaaaa',
         dice_color: '#202020',
+        dropped_dice_color: '#4d4d4d',
+        dropped_dice_label_color: '#1a1a1a',
 
         ambient_light_color: 0xf0f0f0,
         spot_light_color: 0xefefef,
@@ -125,7 +127,25 @@ const DICE = (function() {
          * Setting this to false improves performance but changes the visual
          * character of the roll.
          */
-        use_adapvite_timestep: true
+        use_adapvite_timestep: true,
+
+        /*
+         * Preset colours for dice groups (up to 10 groups).
+         * These are applied automatically when no custom colour is provided
+         * via the group's visual.color property.
+         */
+        preset_colours: [
+            0x943126, // red
+            0x22628c, // blue
+            0x18683a, // green
+            0x7b6508, // yellow
+            0x633975, // purple
+            0x935116, // orange
+            0x0e6050, // teal
+            0x952B5e, // pink
+            0x00765e, // mint
+            0x453b94  // indigo
+        ]
     };
 
 
@@ -325,11 +345,7 @@ const DICE = (function() {
         $t.bind(container, 'resize', function() {
 
             /*
-             * Existing library behaviour retained here.
-             *
-             * TODO:
-             * This should eventually be replaced with a proper resize
-             * observer and should not depend on the old "elem" variable.
+             * Fixed: use this.container instead of undefined elem.canvas
              */
             this.reinit(this.container);
         });
@@ -666,9 +682,12 @@ const DICE = (function() {
         after_roll
     ) {
 
+        console.log('Dice Roll: Starting throw with notation:', this.diceToRoll);
+
         var box = this;
 
         if (box.rolling) {
+            console.warn('Dice Roll: Already rolling, ignoring request.');
             return;
         }
 
@@ -849,11 +868,13 @@ const DICE = (function() {
             box.diceToRoll
         );
 
+        console.log('Dice Roll: Parsed notation:', notation);
 
         /*
          * No physical dice means there is nothing to animate.
          */
         if (notation.set.length == 0) {
+            console.warn('Dice Roll: No dice to roll, aborting.');
             return;
         }
 
@@ -869,6 +890,8 @@ const DICE = (function() {
             vector,
             boost
         );
+
+        console.log('Dice Roll: Generated ' + vectors.length + ' physical dice.');
 
 
         box.rolling = true;
@@ -890,6 +913,9 @@ const DICE = (function() {
          */
         if (before_roll) {
             request_results = before_roll(notation);
+            if (request_results && request_results.length) {
+                console.log('Dice Roll: Forced results provided:', request_results);
+            }
         }
 
 
@@ -921,6 +947,8 @@ const DICE = (function() {
 
 
                 function(diceResults) {
+
+                    console.log('Dice Roll: Physics finished, evaluating results.');
 
                     /*
                      * Evaluate all physical dice against their logical groups
@@ -1035,6 +1063,8 @@ const DICE = (function() {
 
                     notation.resultString = res;
 
+                    console.log('Dice Roll: Final result string:', res);
+                    console.log('Dice Roll: Detailed dice results:', notation.diceResults);
 
                     /*
                      * The callback receives the complete notation object,
@@ -1070,6 +1100,9 @@ const DICE = (function() {
      *   set
      *       Original die type, retained for backwards compatibility.
      *
+     *   color
+     *       Colour for the die (from preset or group.visual.color).
+     *
      * This is the boundary between logical roll notation and physical dice.
      *
      * @param {Object} notation
@@ -1098,6 +1131,18 @@ const DICE = (function() {
         ) {
 
             var group = notation.groups[groupIndex];
+
+            /*
+             * Determine colour for this group.
+             * - If group.visual.color is set, use that.
+             * - Otherwise pick a preset colour based on group.id (mod 10).
+             */
+            var groupColor;
+            if (group.visual && group.visual.color !== undefined) {
+                groupColor = group.visual.color;
+            } else {
+                groupColor = vars.preset_colours[group.id % vars.preset_colours.length];
+            }
 
 
             for (
@@ -1200,7 +1245,9 @@ const DICE = (function() {
                     pos: pos,
                     velocity: velocity,
                     angle: angle,
-                    axis: axis
+                    axis: axis,
+
+                    color: groupColor
                 });
             }
         }
@@ -1230,6 +1277,7 @@ const DICE = (function() {
      * @param {Object} axis
      * @param {number} id
      * @param {number} groupId
+     * @param {number} color - Hexadecimal colour for the die body.
      */
     that.dice_box.prototype.create_dice = function(
         type,
@@ -1238,25 +1286,75 @@ const DICE = (function() {
         angle,
         axis,
         id,
-        groupId
+        groupId,
+        color
     ) {
 
-        var dice =
-            threeD_dice['create_' + type]();
+        color = color || 0xf0f0f0; // fallback light grey
 
+        var geometry = threeD_dice.getGeometry(type);
+        if (!geometry) {
+            console.warn('Dice Roll: Unsupported dice type:', type);
+            return;
+        }
 
+        var size = vars.scale / 2;
+        var margin;
+        var face_labels;
+        // Material colour set to white so the texture appears un‑tinted
+        var materialOptions = $t.copyto(vars.material_options, { color: 0xffffff });
+        var bodyColor = color;
+
+        var materials;
+        if (type === 'd4') {
+            // Use default d4 label variant (index 0)
+            materials = create_d4_materials(size, vars.scale * 2, CONSTS.d4_labels[0], materialOptions, bodyColor);
+        } else {
+            switch (type) {
+                case 'd6':
+                    face_labels = CONSTS.standart_d20_dice_face_labels;
+                    margin = 0.9;
+                    break;
+                case 'd8':
+                    face_labels = CONSTS.standart_d20_dice_face_labels;
+                    margin = 1.4;
+                    break;
+                case 'd10':
+                case 'd9':
+                    face_labels = CONSTS.standart_d20_dice_face_labels;
+                    margin = 1.0;
+                    break;
+                case 'd12':
+                    face_labels = CONSTS.standart_d20_dice_face_labels;
+                    margin = 1.0;
+                    break;
+                case 'd20':
+                    face_labels = CONSTS.standart_d20_dice_face_labels;
+                    margin = 1.2;
+                    break;
+                case 'd100':
+                    face_labels = CONSTS.standart_d100_dice_face_labels;
+                    margin = 1.5;
+                    break;
+                default:
+                    face_labels = CONSTS.standart_d20_dice_face_labels;
+                    margin = 1.0;
+            }
+            materials = create_dice_materials(face_labels, size, margin, materialOptions, bodyColor);
+        }
+
+        var dice = new THREE.Mesh(geometry, new THREE.MeshFaceMaterial(materials));
         dice.castShadow = true;
-
 
         /*
          * Physical dice metadata.
-         *
-         * These properties intentionally live on the rendered object because
-         * the object is the thing ultimately returned by the physics layer.
          */
         dice.dice_type = type;
         dice.dice_id = id;
         dice.group_id = groupId;
+
+        // Store the body colour so that we can reuse it when shifting faces
+        dice.body_color = bodyColor;
 
 
         dice.body =
@@ -1664,7 +1762,8 @@ const DICE = (function() {
                 vector.angle,
                 vector.axis,
                 vector.id,
-                vector.groupId
+                vector.groupId,
+                vector.color   // Pass the colour from the vector
             );
         }
     };
@@ -1845,6 +1944,10 @@ const DICE = (function() {
      *         visual: null
      *     }
      *
+     * Limits:
+     *   - Maximum 10 groups per roll.
+     *   - Maximum 10 dice per group.
+     *
      * @param {string} notation
      * @returns {Object}
      */
@@ -1904,6 +2007,7 @@ const DICE = (function() {
         ) {
 
             ret.error = true;
+            console.warn('Dice Roll: Empty or invalid notation string.');
             return ret;
         }
 
@@ -1923,6 +2027,7 @@ const DICE = (function() {
 
         if (source.length === 0) {
             ret.error = true;
+            console.warn('Dice Roll: Notation contains only whitespace after removing @.');
             return ret;
         }
 
@@ -2012,6 +2117,7 @@ const DICE = (function() {
                  */
                 if (sign < 0) {
                     ret.error = true;
+                    console.warn('Dice Roll: Negative dice term not allowed:', term);
                     continue;
                 }
 
@@ -2050,6 +2156,16 @@ const DICE = (function() {
                  */
                 if (count <= 0) {
                     ret.error = true;
+                    console.warn('Dice Roll: Dice count must be > 0.');
+                    continue;
+                }
+
+                /*
+                 * Limit: maximum 10 dice per group.
+                 */
+                if (count > 10) {
+                    ret.error = true;
+                    console.warn('Dice Roll: Maximum 10 dice per group (got ' + count + ').');
                     continue;
                 }
 
@@ -2062,6 +2178,7 @@ const DICE = (function() {
                 ) {
 
                     ret.error = true;
+                    console.warn('Dice Roll: Unsupported dice type:', type);
                     continue;
                 }
 
@@ -2078,6 +2195,7 @@ const DICE = (function() {
                 ) {
 
                     ret.error = true;
+                    console.warn('Dice Roll: Invalid rule count for', term);
                     continue;
                 }
 
@@ -2092,6 +2210,7 @@ const DICE = (function() {
                 ) {
 
                     ret.error = true;
+                    console.warn('Dice Roll: Rule count (' + ruleCount + ') exceeds dice count (' + count + ').');
                     continue;
                 }
 
@@ -2170,6 +2289,17 @@ const DICE = (function() {
 
                 ret.groups.push(group);
 
+                /*
+                 * Limit: maximum 10 groups.
+                 */
+                if (ret.groups.length > 10) {
+                    ret.error = true;
+                    console.warn('Dice Roll: Maximum 10 groups allowed (got ' + ret.groups.length + ').');
+                    // Remove the last group to keep within limit
+                    ret.groups.pop();
+                    // Break out of loop? We'll just continue and later mark error.
+                }
+
 
                 /*
                  * Maintain the flattened set used by the physical dice
@@ -2224,6 +2354,7 @@ const DICE = (function() {
              * so callers still receive a safe result object.
              */
             ret.error = true;
+            console.warn('Dice Roll: Unrecognised term:', term);
         }
 
 
@@ -2235,8 +2366,15 @@ const DICE = (function() {
          */
         if (ret.set.length === 0) {
             ret.error = true;
+            console.warn('Dice Roll: No dice in notation (constant-only expressions are not allowed).');
         }
 
+
+        if (!ret.error) {
+            console.log('Dice Roll: Notation parsed successfully. Groups:', ret.groups.length, 'Dice:', ret.set.length);
+        } else {
+            console.warn('Dice Roll: Notation parse had errors. Results may be incomplete.');
+        }
 
         return ret;
     };
@@ -2724,7 +2862,57 @@ const DICE = (function() {
 
 
     /**
-     * Creates a d4 mesh.
+     * Returns the geometry for a given dice type, creating it if needed.
+     *
+     * @param {string} type - e.g., 'd6', 'd20', etc.
+     * @returns {THREE.Geometry|null}
+     */
+    threeD_dice.getGeometry = function(type) {
+        switch (type) {
+            case 'd4':
+                if (!this.d4_geometry) {
+                    this.d4_geometry = create_d4_geometry(vars.scale * 1.2);
+                }
+                return this.d4_geometry;
+            case 'd6':
+                if (!this.d6_geometry) {
+                    this.d6_geometry = create_d6_geometry(vars.scale * 1.1);
+                }
+                return this.d6_geometry;
+            case 'd8':
+                if (!this.d8_geometry) {
+                    this.d8_geometry = create_d8_geometry(vars.scale);
+                }
+                return this.d8_geometry;
+            case 'd9':
+            case 'd10':
+                if (!this.d10_geometry) {
+                    this.d10_geometry = create_d10_geometry(vars.scale * 0.9);
+                }
+                return this.d10_geometry;
+            case 'd12':
+                if (!this.d12_geometry) {
+                    this.d12_geometry = create_d12_geometry(vars.scale * 0.9);
+                }
+                return this.d12_geometry;
+            case 'd20':
+                if (!this.d20_geometry) {
+                    this.d20_geometry = create_d20_geometry(vars.scale);
+                }
+                return this.d20_geometry;
+            case 'd100':
+                if (!this.d10_geometry) {
+                    this.d10_geometry = create_d10_geometry(vars.scale * 0.9);
+                }
+                return this.d10_geometry;
+            default:
+                return null;
+        }
+    };
+
+
+    /**
+     * Creates a d4 mesh (kept for backward compatibility).
      *
      * @returns {THREE.Mesh}
      */
@@ -2759,7 +2947,7 @@ const DICE = (function() {
 
 
     /**
-     * Creates a d6 mesh.
+     * Creates a d6 mesh (kept for backward compatibility).
      *
      * @returns {THREE.Mesh}
      */
@@ -2795,7 +2983,7 @@ const DICE = (function() {
 
 
     /**
-     * Creates a d8 mesh.
+     * Creates a d8 mesh (kept for backward compatibility).
      *
      * @returns {THREE.Mesh}
      */
@@ -2831,9 +3019,7 @@ const DICE = (function() {
 
 
     /**
-     * Creates a d9 mesh.
-     *
-     * Retained for compatibility with the original geometry implementation.
+     * Creates a d9 mesh (kept for backward compatibility).
      *
      * @returns {THREE.Mesh}
      */
@@ -2869,7 +3055,7 @@ const DICE = (function() {
 
 
     /**
-     * Creates a d10 mesh.
+     * Creates a d10 mesh (kept for backward compatibility).
      *
      * @returns {THREE.Mesh}
      */
@@ -2905,7 +3091,7 @@ const DICE = (function() {
 
 
     /**
-     * Creates a d12 mesh.
+     * Creates a d12 mesh (kept for backward compatibility).
      *
      * @returns {THREE.Mesh}
      */
@@ -2941,7 +3127,7 @@ const DICE = (function() {
 
 
     /**
-     * Creates a d20 mesh.
+     * Creates a d20 mesh (kept for backward compatibility).
      *
      * @returns {THREE.Mesh}
      */
@@ -2977,10 +3163,7 @@ const DICE = (function() {
 
 
     /**
-     * Creates a d100 mesh.
-     *
-     * The original library represents d100 using d10 geometry with
-     * percentile labels.
+     * Creates a d100 mesh (kept for backward compatibility).
      *
      * @returns {THREE.Mesh}
      */
@@ -3021,13 +3204,19 @@ const DICE = (function() {
      * @param {string[]} face_labels
      * @param {number} size
      * @param {number} margin
+     * @param {Object} [materialOptions] - Optional override for material properties (e.g., color).
+     * @param {number|string} [bodyColor] - Colour used as the background of the face texture.
      * @returns {THREE.Material[]}
      */
     function create_dice_materials(
         face_labels,
         size,
-        margin
+        margin,
+        materialOptions,
+        bodyColor
     ) {
+        materialOptions = materialOptions || vars.material_options;
+        bodyColor = bodyColor || vars.dice_color;
 
         /**
          * Creates a text texture for one die face.
@@ -3139,7 +3328,7 @@ const DICE = (function() {
 
 
         var materials = [];
-
+        var bg = colorToCSS(bodyColor);
 
         for (
             var i = 0;
@@ -3150,13 +3339,13 @@ const DICE = (function() {
             materials.push(
                 new THREE.MeshPhongMaterial(
                     $t.copyto(
-                        vars.material_options,
+                        materialOptions,
                         {
                             map:
                                 create_text_texture(
                                     face_labels[i],
                                     vars.label_color,
-                                    vars.dice_color
+                                    bg
                                 )
                         }
                     )
@@ -3175,13 +3364,19 @@ const DICE = (function() {
      * @param {number} size
      * @param {number} margin
      * @param {Array[]} labels
+     * @param {Object} [materialOptions] - Optional override for material properties.
+     * @param {number|string} [bodyColor] - Colour used as the background of the face texture.
      * @returns {THREE.Material[]}
      */
     function create_d4_materials(
         size,
         margin,
-        labels
+        labels,
+        materialOptions,
+        bodyColor
     ) {
+        materialOptions = materialOptions || vars.material_options;
+        bodyColor = bodyColor || vars.dice_color;
 
         /**
          * Creates the special triangular d4 texture.
@@ -3291,7 +3486,7 @@ const DICE = (function() {
 
 
         var materials = [];
-
+        var bg = colorToCSS(bodyColor);
 
         for (
             var i = 0;
@@ -3302,13 +3497,13 @@ const DICE = (function() {
             materials.push(
                 new THREE.MeshPhongMaterial(
                     $t.copyto(
-                        vars.material_options,
+                        materialOptions,
                         {
                             map:
                                 create_d4_text(
                                     labels[i],
                                     vars.label_color,
-                                    vars.dice_color
+                                    bg
                                 )
                         }
                     )
@@ -3659,20 +3854,39 @@ const DICE = (function() {
     // HELPERS
     // ---------------------------------------------------------------------
 
+
     /**
-     * Returns the smallest power of two that is greater than or equal to the given size.
+     * @brief Returns the smallest power of two that is greater than or equal to the given size.
      *
      * WebGL renders textures most efficiently when their dimensions are powers of two.
      * This helper ensures canvas textures used for die faces meet that requirement,
      * avoiding potential rendering artifacts or performance penalties.
      *
-     * @param {number} size - The original texture size.
-     * @returns {number} The next power-of-two size.
+     * If the provided size is less than 1, the function returns 1 to guarantee a
+     * valid canvas dimension.
+     *
+     * @param {number} size - The original texture size (usually in pixels).
+     * @returns {number} The next power-of-two size, or 1 if the input is less than 1.
      */
     function calc_texture_size(size) {
         if (size < 1) return 1;
         return Math.pow(2, Math.ceil(Math.log2(size)));
     }
+
+
+    /**
+     * Converts a colour value (number or string) to a CSS colour string.
+     *
+     * @param {number|string} color - e.g., 0xff0000 or '#ff0000'
+     * @returns {string} CSS colour string like '#ff0000'
+     */
+    function colorToCSS(color) {
+        if (typeof color === 'number') {
+            return '#' + ('000000' + color.toString(16)).slice(-6);
+        }
+        return color;
+    }
+
 
     /**
      * Returns a random floating point value in [0, 1).
@@ -4616,6 +4830,7 @@ const DICE = (function() {
         /*
          * d4 requires regenerating its special face-label material because
          * the triangular labels depend on orientation.
+         * Use the stored body colour.
          */
         if (
             dice.dice_type == 'd4' &&
@@ -4626,13 +4841,15 @@ const DICE = (function() {
                 num += 4;
             }
 
-
+            var materialOptions = $t.copyto(vars.material_options, { color: 0xffffff });
             dice.material =
                 new THREE.MeshFaceMaterial(
                     create_d4_materials(
                         vars.scale / 2,
                         vars.scale * 2,
-                        CONSTS.d4_labels[num]
+                        CONSTS.d4_labels[num],
+                        materialOptions,
+                        dice.body_color   // use the colour we stored on the die
                     )
                 );
         }
