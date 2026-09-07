@@ -34,7 +34,7 @@
  * @author Sarah Rosanna Busch (refactor, see changelog)
  * @author Rory Hibbert (refactor, see changelog)
  * @date 10 Aug 2023
- * @version 1.2
+ * @version 1.3
  * @dependencies teal.js, cannon.js, three.js
  */
 
@@ -71,6 +71,8 @@
  * - Added notation.diceResults for rich result information.
  * - Updated stringify_notation() to preserve rules.
  * - Added feature to change colour of 'dropped' dice.
+ * - Added compound d100: each d100 now rolls both a tens die and a units die,
+ *   and keep/drop rules operate on the combined 1-100 value.
  */
 
 
@@ -123,12 +125,19 @@ const DICE = (function() {
         use_shadows: true,
 
         /*
+         * If true, d100 rolls are compound: a tens die and a units die.
+         * Keep/drop rules apply to the combined 1-100 value.
+         * If false, d100 rolls only a single tens die (0,10,...90).
+         */
+        d100_compound: true,
+
+        /*
          * Adaptive timestep produces more natural-looking animation.
          *
          * Setting this to false improves performance but changes the visual
          * character of the roll.
          */
-        use_adapvite_timestep: true,
+        use_adaptive_timestep: true,
 
         /*
          * Preset colours for dice groups (up to 10 groups).
@@ -178,6 +187,7 @@ const DICE = (function() {
          *
          * d10 uses 0 internally and converts 0 to 10 when exposed.
          * d100 uses the d10 geometry and exposes 0, 10, 20 ... 90.
+         * Physical d100 values are 0-9 (tens digit).
          */
         dice_face_range: {
             'd4': [1, 4],
@@ -187,7 +197,7 @@ const DICE = (function() {
             'd10': [0, 9],
             'd12': [1, 12],
             'd20': [1, 20],
-            'd100': [0, 9]
+            'd100': [0, 9]   // physical tens digit
         },
 
         dice_mass: {
@@ -852,7 +862,7 @@ const DICE = (function() {
         after_roll
     ) {
 
-        var uat = vars.use_adapvite_timestep;
+        var uat = vars.use_adaptive_timestep;
 
 
         /*
@@ -885,13 +895,13 @@ const DICE = (function() {
          *
          * generate_vectors() expands the logical groups into individual
          * physical dice while retaining group metadata.
+         * For compound d100 groups, it generates TWO physical vectors per die.
          */
         var vectors = box.generate_vectors(
             notation,
             vector,
             boost
         );
-
         console.log('Dice Roll: Generated ' + vectors.length + ' physical dice.');
 
 
@@ -947,143 +957,82 @@ const DICE = (function() {
                 request_results || notation.result,
 
 
-                function(diceResults) {
+                function(rawDiceResults) {
 
-                    console.log('Dice Roll: Physics finished, evaluating results.');
+                    console.log('Dice Roll: Physics finished, raw face values:', rawDiceResults);
 
                     /*
-                     * Evaluate all physical dice against their logical groups
-                     * and rules.
+                     * STEP 1: Combine compound dice (e.g., d100 = tens + units)
+                     * This produces a new array where each entry represents one
+                     * logical die (with a combined value). The original raw
+                     * sub-results are stored for later visual handling.
                      */
-                    notation.diceResults =
-                        evaluate_results(
-                            notation,
-                            diceResults
-                        );
+                    var combinedResults = combine_compound_results(rawDiceResults, box.dices);
 
-                    /** apply the visuals change for dropped dice */
-                    apply_dropped_visuals(notation.diceResults, box.dices);
+                    console.log('Dice Roll: Combined results:', combinedResults);
+
+                    /*
+                     * STEP 2: Evaluate keep/drop rules on the combined results.
+                     * This sets the 'kept' flag on each combined entry.
+                     */
+                    var evaluatedCombined = evaluate_results_on_combined(notation, combinedResults);
+
+                    console.log('Dice Roll: After rules (kept flags):', evaluatedCombined);
+
+                    /*
+                     * STEP 3: Apply dropped visuals to both physical dice of each dropped compound.
+                     * This greys out all sub-dice of any dropped compound.
+                     */
+                    apply_dropped_visuals_to_compound(evaluatedCombined, box.dices);
 
                     // Force a render to show the updated dropped dice visuals
                     box.renderer.render(box.scene, box.camera);
 
                     /*
-                     * Preserve the original public API:
-                     *
-                     * notation.result remains a numeric array.
-                     *
-                     * Only dice which survived their group's keep/drop
-                     * evaluation are included.
+                     * STEP 4: Build the final notation object.
+                     * We need to produce notation.diceResults as an array of rich result objects
+                     * for each logical die (combined), and notation.result as kept values.
                      */
+                    notation.diceResults = evaluatedCombined;   // each entry is a combined die result
+
+                    // Build the backwards-compatible numeric array of kept values
                     notation.result = [];
-
-
-                    for (
-                        var i = 0;
-                        i < notation.diceResults.length;
-                        i++
-                    ) {
-
-                        if (
-                            notation.diceResults[i].kept
-                        ) {
-
-                            notation.result.push(
-                                notation.diceResults[i].value
-                            );
+                    for (var i = 0; i < notation.diceResults.length; i++) {
+                        if (notation.diceResults[i].kept) {
+                            notation.result.push(notation.diceResults[i].value);
                         }
                     }
 
+                    // Calculate total (kept values + constant)
+                    notation.resultTotal = calculate_result(notation.diceResults, notation.constant);
 
-                    /*
-                     * Calculate the final numeric result from the evaluated
-                     * dice rather than from the raw physical results.
-                     */
-                    notation.resultTotal =
-                        calculate_result(
-                            notation.diceResults,
-                            notation.constant
-                        );
-
-
-                    /*
-                     * Build the printable result from the kept numeric values.
-                     *
-                     * This deliberately excludes dropped dice from the
-                     * traditional result string.
-                     */
+                    // Build the result string (same as before)
                     var values = [];
-
-
-                    for (
-                        var i = 0;
-                        i < notation.result.length;
-                        i++
-                    ) {
-
-                        values.push(
-                            notation.result[i]
-                        );
+                    for (var i = 0; i < notation.result.length; i++) {
+                        values.push(notation.result[i]);
                     }
-
-
                     var res = values.join(' ');
-
-
-                    /*
-                     * Add the constant modifier.
-                     */
                     if (notation.constant) {
-
                         if (notation.constant > 0) {
-
-                            res +=
-                                ' +' +
-                                notation.constant;
-
-                        }
-                        else {
-
-                            res +=
-                                ' -' +
-                                Math.abs(notation.constant);
+                            res += ' +' + notation.constant;
+                        } else {
+                            res += ' -' + Math.abs(notation.constant);
                         }
                     }
-
-
-                    /*
-                     * Only display "= total" when there is more than one
-                     * result or a constant modifier, matching the behaviour
-                     * of the original library.
-                     */
-                    if (
-                        values.length > 1 ||
-                        notation.constant
-                    ) {
-
-                        res +=
-                            ' = ' +
-                            notation.resultTotal;
+                    if (values.length > 1 || notation.constant) {
+                        res += ' = ' + notation.resultTotal;
                     }
-
-
                     notation.resultString = res;
 
                     console.log('Dice Roll: Final result string:', res);
                     console.log('Dice Roll: Detailed dice results:', notation.diceResults);
 
-                    /*
-                     * The callback receives the complete notation object,
-                     * including both the backwards-compatible result array
-                     * and the new rich diceResults array.
-                     */
                     if (after_roll) {
                         after_roll(notation);
                     }
 
-
                     box.rolling = false;
-                    vars.use_adapvite_timestep = uat;
+                    vars.use_adaptive_timestep = uat;
                 }
             );
         }
@@ -1094,6 +1043,7 @@ const DICE = (function() {
      * Generates the initial physical state for every die in a notation.
      *
      * The notation groups are expanded into individual physical dice here.
+     * For compound groups (d100), each logical die produces TWO physical vectors.
      *
      * Each vector receives:
      *
@@ -1109,6 +1059,13 @@ const DICE = (function() {
      *   color
      *       Colour for the die (from preset or group.visual.color).
      *
+     *   compoundId (optional)
+     *       If present, this die is part of a compound (tens+units).
+     *       Same compoundId links the two dice of one logical die.
+     *
+     *   role (optional)
+     *       'tens' or 'units' – only for compound dice.
+     *
      * This is the boundary between logical roll notation and physical dice.
      *
      * @param {Object} notation
@@ -1122,14 +1079,17 @@ const DICE = (function() {
         boost
     ) {
 
+        var self = this;
+
         var vectors = [];
 
         var dieId = 0;
+        var compoundIdCounter = 0;
 
 
         /*
-         * Expand every logical group into physical dice.
-         */
+        * Expand every logical group into physical dice.
+        */
         for (
             var groupIndex = 0;
             groupIndex < notation.groups.length;
@@ -1139,10 +1099,10 @@ const DICE = (function() {
             var group = notation.groups[groupIndex];
 
             /*
-             * Determine colour for this group.
-             * - If group.visual.color is set, use that.
-             * - Otherwise pick a preset colour based on group.id (mod 10).
-             */
+            * Determine colour for this group.
+            * - If group.visual.color is set, use that.
+            * - Otherwise pick a preset colour based on group.id (mod 10).
+            */
             var groupColor;
             if (group.visual && group.visual.color !== undefined) {
                 groupColor = group.visual.color;
@@ -1150,6 +1110,8 @@ const DICE = (function() {
                 groupColor = vars.preset_colours[group.id % vars.preset_colours.length];
             }
 
+            // Whether this group is compound (e.g., d100 with units)
+            var isCompound = group.isCompound && vars.d100_compound;
 
             for (
                 var dieIndex = 0;
@@ -1157,107 +1119,78 @@ const DICE = (function() {
                 dieIndex++
             ) {
 
-                var vec = make_random_vector(vector);
-
-
-                var pos = {
-                    x:
-                        this.w *
-                        (vec.x > 0 ? -1 : 1) *
-                        0.9,
-
-                    y:
-                        this.h *
-                        (vec.y > 0 ? -1 : 1) *
-                        0.9,
-
-                    z:
-                        rnd() * 200 +
-                        200
-                };
-
-
-                var projector =
-                    Math.abs(
-                        vec.x / vec.y
-                    );
-
-
-                if (projector > 1.0) {
-                    pos.y /= projector;
-                }
-                else {
-                    pos.x *= projector;
+                // For compound groups, we need to generate TWO physical dice per logical die.
+                var compoundId = null;
+                if (isCompound) {
+                    compoundId = compoundIdCounter++;
                 }
 
+                // Helper to create a single physical vector
+                function createSingleVector(role, dieType) {
+                    var vec = make_random_vector(vector);
 
-                var velvec =
-                    make_random_vector(vector);
+                    var pos = {
+                        x: self.w * (vec.x > 0 ? -1 : 1) * 0.9,   // use self
+                        y: self.h * (vec.y > 0 ? -1 : 1) * 0.9,   // use self
+                        z: rnd() * 200 + 200
+                    };
 
+                    var projector = Math.abs(vec.x / vec.y);
+                    if (projector > 1.0) {
+                        pos.y /= projector;
+                    } else {
+                        pos.x *= projector;
+                    }
 
-                var velocity = {
-                    x: velvec.x * boost,
-                    y: velvec.y * boost,
-                    z: -10
-                };
+                    var velvec = make_random_vector(vector);
+                    var velocity = {
+                        x: velvec.x * boost,
+                        y: velvec.y * boost,
+                        z: -10
+                    };
 
+                    var inertia = CONSTS.dice_inertia[dieType];
+                    var angle = {
+                        x: -(rnd() * vec.y * 5 + inertia * vec.y),
+                        y: rnd() * vec.x * 5 + inertia * vec.x,
+                        z: 0
+                    };
 
-                var inertia =
-                    CONSTS.dice_inertia[
-                        group.type
-                    ];
+                    var axis = {
+                        x: rnd(),
+                        y: rnd(),
+                        z: rnd(),
+                        a: rnd()
+                    };
 
+                    var v = {
+                        id: dieId++,
+                        groupId: group.id,
+                        set: dieType,
+                        pos: pos,
+                        velocity: velocity,
+                        angle: angle,
+                        axis: axis,
+                        color: groupColor
+                    };
 
-                var angle = {
-                    x:
-                        -(
-                            rnd() *
-                            vec.y *
-                            5 +
-                            inertia *
-                            vec.y
-                        ),
+                    if (isCompound) {
+                        v.compoundId = compoundId;
+                        v.role = role;
+                    }
+                    return v;
+                }
 
-                    y:
-                        rnd() *
-                        vec.x *
-                        5 +
-                        inertia *
-                        vec.x,
-
-                    z: 0
-                };
-
-
-                var axis = {
-                    x: rnd(),
-                    y: rnd(),
-                    z: rnd(),
-                    a: rnd()
-                };
-
-
-                vectors.push({
-                    id: dieId++,
-
-                    groupId: group.id,
-
-                    /*
-                     * Retained because existing code expects physical
-                     * vectors to expose "set".
-                     */
-                    set: group.type,
-
-                    pos: pos,
-                    velocity: velocity,
-                    angle: angle,
-                    axis: axis,
-
-                    color: groupColor
-                });
+                if (isCompound) {
+                    // Push a tens die (type 'd100') and a units die (type 'd10')
+                    vectors.push(createSingleVector('tens', 'd100'));
+                    vectors.push(createSingleVector('units', 'd10'));
+                } else {
+                    // Normal single die
+                    vectors.push(createSingleVector(null, group.type));
+                }
             }
         }
-
 
         return vectors;
     };
@@ -1284,6 +1217,8 @@ const DICE = (function() {
      * @param {number} id
      * @param {number} groupId
      * @param {number} color - Hexadecimal colour for the die body.
+     * @param {number} [compoundId] - If provided, this die is part of a compound pair.
+     * @param {string} [role] - 'tens' or 'units' if compound.
      */
     that.dice_box.prototype.create_dice = function(
         type,
@@ -1293,7 +1228,9 @@ const DICE = (function() {
         axis,
         id,
         groupId,
-        color
+        color,
+        compoundId,
+        role
     ) {
 
         color = color || 0xf0f0f0; // fallback light grey
@@ -1366,6 +1303,12 @@ const DICE = (function() {
         // For d4, store which label variant is currently used (default = 0)
         if (type === 'd4') {
             dice.d4_variant = 0;
+        }
+
+        // Store compound info if present
+        if (compoundId !== undefined) {
+            dice.compoundId = compoundId;
+            dice.role = role;
         }
 
         dice.body =
@@ -1506,7 +1449,7 @@ const DICE = (function() {
      * shifting the visible faces to the requested values.
      *
      * @returns {Object[]}
-     *        Rich physical dice result objects.
+     *        Rich physical dice result objects (raw, per physical die).
      */
     that.dice_box.prototype.emulate_throw = function() {
 
@@ -1551,7 +1494,7 @@ const DICE = (function() {
         ++this.iteration;
 
 
-        if (vars.use_adapvite_timestep) {
+        if (vars.use_adaptive_timestep) {
 
             while (
                 time_diff >
@@ -1680,7 +1623,7 @@ const DICE = (function() {
             })(
                 this,
                 threadid,
-                vars.use_adapvite_timestep
+                vars.use_adaptive_timestep
             );
         }
     };
@@ -1774,7 +1717,9 @@ const DICE = (function() {
                 vector.axis,
                 vector.id,
                 vector.groupId,
-                vector.color   // Pass the colour from the vector
+                vector.color,
+                vector.compoundId,   // may be undefined
+                vector.role          // may be undefined
             );
         }
     };
@@ -1812,7 +1757,7 @@ const DICE = (function() {
              * temporarily made deterministic here so we can establish the
              * current face of each die before applying the desired value.
              */
-            vars.use_adapvite_timestep = false;
+            vars.use_adaptive_timestep = false;
 
 
             var res =
@@ -1828,21 +1773,80 @@ const DICE = (function() {
             );
 
 
+            // For compound dice, we need to split the forced value into tens and units.
+            // Build a map of physical die ID to its compoundId and role.
+            var diceMap = {};
+            for (var i = 0; i < vectors.length; i++) {
+                var vec = vectors[i];
+                if (vec.compoundId !== undefined) {
+                    diceMap[vec.id] = { compoundId: vec.compoundId, role: vec.role };
+                }
+            }
+
+            // For each physical die, determine the requested value.
+            // We have 'res' (raw face values) and 'values' (forced results per logical die).
+            // We need to apply the shift to each physical die based on its role.
+            // The order of physical dice in 'this.dices' matches the order of vectors.
+            // However, we have the vectors list, which we can use to correlate.
+
+            // We'll create an array of requested values per physical die.
+            var requestedValuesPerDie = [];
+            var logicalDieIndex = 0;
+            for (var i = 0; i < vectors.length; i++) {
+                var vec = vectors[i];
+                if (vec.compoundId !== undefined) {
+                    // This physical die is part of a compound.
+                    // The logical die index corresponds to this compound.
+                    var fullValue = values[logicalDieIndex];
+                    var tens = Math.floor(fullValue / 10) % 10;
+                    var unit = fullValue % 10;
+                    if (vec.role === 'tens') {
+                        requestedValuesPerDie.push(tens);
+                    } else { // units
+                        requestedValuesPerDie.push(unit);
+                        // Store the forced unit on the mesh so combine_compound_results can use it later.
+                        // We need to find the mesh for this physical die.
+                        // The mesh is created later, but we can store the unit in a temporary map.
+                        // Since we don't have the mesh yet, we can store it in the vector itself.
+                        // We'll store it in a property on the vector, then later in create_dice we can transfer it.
+                        // However, create_dice is called before this point? Actually, prepare_dices_for_roll already created all dice.
+                        // So we have the meshes now.
+                        // We can use the existing 'this.dices' array which is ordered.
+                        // We'll find the mesh by its ID.
+                        var mesh = null;
+                        for (var j = 0; j < box.dices.length; j++) {
+                            if (box.dices[j].dice_id === vec.id) {
+                                mesh = box.dices[j];
+                                break;
+                            }
+                        }
+                        if (mesh) {
+                            mesh.forced_unit = unit;
+                        }
+                    }
+                    // Only increment logicalDieIndex when we've processed both dice of this compound.
+                    // Since vectors are ordered such that tens comes before units for each compound,
+                    // we increment after processing the units die.
+                    if (vec.role === 'units') {
+                        logicalDieIndex++;
+                    }
+                } else {
+                    // Normal single die
+                    requestedValuesPerDie.push(values[logicalDieIndex]);
+                    logicalDieIndex++;
+                }
+            }
+
+            // Now apply the shifts.
             for (
                 var i = 0;
                 i < res.length;
                 i++
             ) {
 
-                /*
-                 * values[i] is deliberately numeric.
-                 *
-                 * res[i] is a rich result object, so shift_dice_faces()
-                 * receives res[i].value rather than the object itself.
-                 */
                 shift_dice_faces(
                     this.dices[i],
-                    values[i],
+                    requestedValuesPerDie[i],
                     res[i].value
                 );
             }
@@ -1952,7 +1956,8 @@ const DICE = (function() {
      *             type: 'drop-lowest',
      *             count: 1
      *         },
-     *         visual: null
+     *         visual: null,
+     *         isCompound: false
      *     }
      *
      * Limits:
@@ -2294,7 +2299,8 @@ const DICE = (function() {
                      *     labelColour: '#aaaaaa'
                      * }
                      */
-                    visual: null
+                    visual: null,
+                    isCompound: (type === 'd100' && vars.d100_compound)
                 };
 
 
@@ -2315,14 +2321,17 @@ const DICE = (function() {
                 /*
                  * Maintain the flattened set used by the physical dice
                  * generation code and by existing consumers.
+                 * For compound d100, we push TWO entries per die (tens and units).
                  */
-                for (
-                    var i = 0;
-                    i < count;
-                    i++
-                ) {
-
-                    ret.set.push(type);
+                if (group.isCompound) {
+                    for (var i = 0; i < count; i++) {
+                        ret.set.push('d100');   // tens die
+                        ret.set.push('d10');    // units die
+                    }
+                } else {
+                    for (var i = 0; i < count; i++) {
+                        ret.set.push(type);
+                    }
                 }
 
 
@@ -2382,7 +2391,7 @@ const DICE = (function() {
 
 
         if (!ret.error) {
-            console.log('Dice Roll: Notation parsed successfully. Groups:', ret.groups.length, 'Dice:', ret.set.length);
+            console.log('Dice Roll: Notation parsed successfully. Groups:', ret.groups.length, 'Physical dice:', ret.set.length);
         } else {
             console.warn('Dice Roll: Notation parse had errors. Results may be incomplete.');
         }
@@ -2574,314 +2583,260 @@ const DICE = (function() {
 
 
     // ---------------------------------------------------------------------
-    // PRIVATE DICE RESULT ENGINE
+    // PRIVATE DICE RESULT ENGINE (NEW)
     // ---------------------------------------------------------------------
 
 
     /**
-     * Evaluates the raw physical dice results against the logical groups.
+     * Combines raw physical dice results into logical compound results.
      *
-     * Every physical die starts as kept=true.
+     * For compound dice (d100), this pairs up the tens and units dice
+     * by their compoundId and computes the combined value (tens*10+unit).
+     * Non‑compound dice are passed through unchanged.
      *
-     * Rules are then evaluated independently within each group.
+     * The returned array contains one entry per logical die, each with:
+     *   - diceId: the ID of the tens die (or the single die for non‑compound)
+     *   - groupId
+     *   - type: the group type (e.g., 'd100')
+     *   - value: the combined numeric result
+     *   - kept: true (to be modified later)
+     *   - subResults: array of the raw physical dice that make up this die
+     *                 (for compound, two entries; for normal, one)
      *
-     * This is important for expressions such as:
-     *
-     *     2d20kh1 + 3d6
-     *
-     * The d20 rule only applies to its two d20s. It must never accidentally
-     * compare those dice against the d6 results.
-     *
-     * Tie behaviour:
-     *
-     * Rules always keep/drop exactly the requested number of physical dice.
-     *
-     * For example:
-     *
-     *     2d20kh1
-     *
-     * with:
-     *
-     *     [17, 17]
-     *
-     * still keeps exactly one physical die.
-     *
-     * The diceId is used as a deterministic tie-breaker. There is no special
-     * game-rule meaning attached to which tied physical die wins.
-     *
-     * @param {Object} notation
-     * @param {Object[]} diceResults
-     * @returns {Object[]}
+     * @param {Object[]} rawResults - Array of per‑physical‑die results (from get_dice_values)
+     * @param {THREE.Mesh[]} dices - Array of Three.js meshes (for forced unit storage)
+     * @returns {Object[]} Combined results per logical die.
      */
-    function evaluate_results(
-        notation,
-        diceResults
-    ) {
+    function combine_compound_results(rawResults, dices) {
+    // Build a map from physical dice ID to the mesh (to read forced_unit if any)
+    var diceMeshMap = {};
+    for (var i = 0; i < dices.length; i++) {
+        diceMeshMap[dices[i].dice_id] = dices[i];
+    }
 
-        /*
-         * Evaluate each logical group independently.
-         */
-        for (
-            var groupIndex = 0;
-            groupIndex < notation.groups.length;
-            groupIndex++
-        ) {
+    // Separate compound and non‑compound results.
+    var compounds = {};
+    var nonCompound = [];
 
-            var group =
-                notation.groups[groupIndex];
+    for (var i = 0; i < rawResults.length; i++) {
+        var r = rawResults[i];
+        var mesh = diceMeshMap[r.diceId];
+        if (mesh && mesh.compoundId !== undefined) {
+            var cid = mesh.compoundId;
+            if (!compounds[cid]) {
+                compounds[cid] = {};
+            }
+            compounds[cid][mesh.role] = r;
+            compounds[cid]._mesh = mesh;
+        } else {
+            nonCompound.push(r);
+        }
+    }
+
+    var combined = [];
+
+    // Process compounds
+    for (var cid in compounds) {
+        var comp = compounds[cid];
+        var tensResult = comp.tens;
+        var unitResult = comp.units;
+        if (!tensResult || !unitResult) {
+            console.warn('Dice Roll: Incomplete compound', cid);
+            continue;
+        }
+
+        // tensResult.value is the tens digit * 10 (e.g., 60 for face "60")
+        var tensDigit = tensResult.value / 10; // get 0-9
+        var unitDigit = unitResult.value;      // 0-9
+        // If forced unit is present, use it
+        var mesh = comp._mesh;
+        if (mesh && mesh.forced_unit !== undefined) {
+            unitDigit = mesh.forced_unit;
+            delete mesh.forced_unit;
+        }
+        var combinedValue = (tensDigit * 10) + unitDigit;
+        if (combinedValue === 0) {
+            combinedValue = 100;
+        }
+
+        combined.push({
+            diceId: tensResult.diceId,
+            groupId: tensResult.groupId,
+            type: tensResult.type,
+            value: combinedValue,
+            kept: true,
+            subResults: [tensResult, unitResult]
+        });
+    }
+
+    // Process non‑compound
+    for (var i = 0; i < nonCompound.length; i++) {
+        var r = nonCompound[i];
+        combined.push({
+            diceId: r.diceId,
+            groupId: r.groupId,
+            type: r.type,
+            value: r.value,
+            kept: true,
+            subResults: [r]
+        });
+    }
+
+    return combined;
+}
 
 
-            /*
-             * Gather only physical dice belonging to this group.
-             */
-            var groupDice = [];
+    /**
+     * Evaluates keep/drop rules on the combined results.
+     *
+     * This is a modified version of the original evaluate_results that works
+     * on the combined array. It groups by groupId and applies the rules
+     * on the combined values.
+     *
+     * @param {Object} notation - The parsed notation object (contains groups).
+     * @param {Object[]} combinedResults - Array of combined logical dice results.
+     * @returns {Object[]} The same array with 'kept' flags set.
+     */
+    function evaluate_results_on_combined(notation, combinedResults) {
+        // Make a copy to avoid mutating the original? We'll mutate in place.
+        var results = combinedResults;
 
+        // Group by groupId
+        var groups = {};
+        for (var i = 0; i < results.length; i++) {
+            var r = results[i];
+            if (!groups[r.groupId]) {
+                groups[r.groupId] = [];
+            }
+            groups[r.groupId].push(r);
+        }
 
-            for (
-                var dieIndex = 0;
-                dieIndex < diceResults.length;
-                dieIndex++
-            ) {
-
-                if (
-                    diceResults[dieIndex].groupId ===
-                    group.id
-                ) {
-
-                    groupDice.push(
-                        diceResults[dieIndex]
-                    );
+        // For each group, find the rule and apply.
+        for (var gid in groups) {
+            var groupDice = groups[gid];
+            // Find the group definition from notation
+            var groupDef = null;
+            for (var j = 0; j < notation.groups.length; j++) {
+                if (notation.groups[j].id == gid) {
+                    groupDef = notation.groups[j];
+                    break;
                 }
             }
+            if (!groupDef) continue;
 
+            // If no rule, keep all (already kept=true)
+            if (!groupDef.rule) continue;
 
-            /*
-             * A group with no rule keeps all its dice.
-             */
-            if (!group.rule) {
-                continue;
-            }
+            // Sort by value (ascending), tie-break by diceId (deterministic)
+            var sorted = groupDice.slice().sort(function(a, b) {
+                if (a.value !== b.value) return a.value - b.value;
+                return a.diceId - b.diceId;
+            });
 
+            var rule = groupDef.rule;
+            var count = rule.count;
 
-            /*
-             * Sort a copy.
-             *
-             * The original array order remains the physical dice order,
-             * which is useful to the renderer.
-             *
-             * Primary sort:
-             *     die value
-             *
-             * Secondary sort:
-             *     physical die ID
-             *
-             * The second comparison makes tied results deterministic.
-             */
-            var sortedDice =
-                groupDice.slice().sort(
-                    function(a, b) {
-
-                        if (
-                            a.value !==
-                            b.value
-                        ) {
-
-                            return (
-                                a.value -
-                                b.value
-                            );
-                        }
-
-
-                        return (
-                            a.diceId -
-                            b.diceId
-                        );
-                    }
-                );
-
-
-            switch (group.rule.type) {
-
+            switch (rule.type) {
                 case 'keep-highest':
-
-                    /*
-                     * Start by dropping every die in the group.
-                     *
-                     * We then explicitly keep exactly N dice.
-                     */
-                    for (
-                        var i = 0;
-                        i < groupDice.length;
-                        i++
-                    ) {
-
-                        groupDice[i].kept =
-                            false;
+                    // Drop all first, then keep highest N
+                    for (var i = 0; i < groupDice.length; i++) {
+                        groupDice[i].kept = false;
                     }
-
-
-                    for (
-                        var i = sortedDice.length - 1;
-
-                        i >= 0 &&
-                        i >=
-                            sortedDice.length -
-                            group.rule.count;
-
-                        i--
-                    ) {
-
-                        sortedDice[i].kept =
-                            true;
+                    for (var i = sorted.length - 1; i >= 0 && i >= sorted.length - count; i--) {
+                        sorted[i].kept = true;
                     }
-
                     break;
-
-
                 case 'keep-lowest':
-
-                    /*
-                     * Start by dropping every die.
-                     */
-                    for (
-                        var i = 0;
-                        i < groupDice.length;
-                        i++
-                    ) {
-
-                        groupDice[i].kept =
-                            false;
+                    for (var i = 0; i < groupDice.length; i++) {
+                        groupDice[i].kept = false;
                     }
-
-
-                    for (
-                        var i = 0;
-
-                        i < sortedDice.length &&
-                        i < group.rule.count;
-
-                        i++
-                    ) {
-
-                        sortedDice[i].kept =
-                            true;
+                    for (var i = 0; i < sorted.length && i < count; i++) {
+                        sorted[i].kept = true;
                     }
-
                     break;
-
-
                 case 'drop-highest':
-
-                    /*
-                     * Keep everything initially, then explicitly drop the
-                     * requested number of highest physical dice.
-                     */
-                    for (
-                        var i = sortedDice.length - 1;
-
-                        i >= 0 &&
-                        i >=
-                            sortedDice.length -
-                            group.rule.count;
-
-                        i--
-                    ) {
-
-                        sortedDice[i].kept =
-                            false;
+                    // keep all then drop highest N
+                    for (var i = sorted.length - 1; i >= 0 && i >= sorted.length - count; i--) {
+                        sorted[i].kept = false;
                     }
-
                     break;
-
-
                 case 'drop-lowest':
-
-                    /*
-                     * Keep everything initially, then explicitly drop the
-                     * requested number of lowest physical dice.
-                     */
-                    for (
-                        var i = 0;
-
-                        i < sortedDice.length &&
-                        i < group.rule.count;
-
-                        i++
-                    ) {
-
-                        sortedDice[i].kept =
-                            false;
+                    for (var i = 0; i < sorted.length && i < count; i++) {
+                        sorted[i].kept = false;
                     }
-
+                    break;
+                default:
                     break;
             }
         }
 
-
-        return diceResults;
+        return results;
     }
 
 
     /**
-     * Applies visual changes to dropped dice (those with kept === false).
-     * Changes both the die body colour and the label colour to the dropped variants.
+     * Applies dropped visuals to both physical dice of a dropped compound.
      *
-     * @param {Object[]} diceResults - Array of rich result objects.
-     * @param {THREE.Mesh[]} dices - Array of Three.js dice meshes.
+     * For each combined result that has kept=false, we look at its subResults
+     * and grey out all the physical dice.
+     *
+     * @param {Object[]} combinedResults - Array of combined logical dice results (with kept flags).
+     * @param {THREE.Mesh[]} dices - Array of all physical dice meshes.
      */
-    function apply_dropped_visuals(diceResults, dices) {
-        // Build a map for quick lookup by diceId
-        var resultMap = {};
-        for (var i = 0; i < diceResults.length; i++) {
-            resultMap[diceResults[i].diceId] = diceResults[i];
+    function apply_dropped_visuals_to_compound(combinedResults, dices) {
+        // Build a map from physical die ID to mesh
+        var diceMap = {};
+        for (var i = 0; i < dices.length; i++) {
+            diceMap[dices[i].dice_id] = dices[i];
         }
 
         var droppedCount = 0;
-        for (var i = 0; i < dices.length; i++) {
-            var dice = dices[i];
-            var result = resultMap[dice.dice_id];
-            if (!result) continue;
+        for (var i = 0; i < combinedResults.length; i++) {
+            var combined = combinedResults[i];
+            if (!combined.kept) {
+                // This logical die is dropped – grey out all its physical dice
+                var subResults = combined.subResults || [];
+                for (var j = 0; j < subResults.length; j++) {
+                    var sr = subResults[j];
+                    var dice = diceMap[sr.diceId];
+                    if (!dice) continue;
+                    // Apply the grey material
+                    var type = dice.dice_type;
+                    var size = vars.scale / 2;
+                    var margin;
+                    var face_labels;
+                    var materialOptions = $t.copyto(vars.material_options, { color: 0xffffff });
+                    var bodyColor = vars.dropped_dice_color;
+                    var labelColor = vars.dropped_dice_label_color;
 
-            // Only change if not kept
-            if (!result.kept) {
-                droppedCount++;
-                console.log('Dice Roll: Dropping die', dice.dice_id, 'type', dice.dice_type, 'value', result.value);
-                var type = dice.dice_type;
-                var geometry = dice.geometry; // keep existing geometry
-                var size = vars.scale / 2;
-                var margin;
-                var face_labels;
-                var materialOptions = $t.copyto(vars.material_options, { color: 0xffffff });
-                var bodyColor = vars.dropped_dice_color;
-                var labelColor = vars.dropped_dice_label_color;
-
-                var materials;
-                if (type === 'd4') {
-                    // Use the stored variant (or default 0)
-                    var variant = (dice.d4_variant !== undefined) ? dice.d4_variant : 0;
-                    materials = create_d4_materials(size, vars.scale * 2, CONSTS.d4_labels[variant], materialOptions, bodyColor, labelColor);
-                } else {
-                    switch (type) {
-                        case 'd6':  face_labels = CONSTS.standart_d20_dice_face_labels; margin = 0.9; break;
-                        case 'd8':  face_labels = CONSTS.standart_d20_dice_face_labels; margin = 1.4; break;
-                        case 'd10': case 'd9': face_labels = CONSTS.standart_d20_dice_face_labels; margin = 1.0; break;
-                        case 'd12': face_labels = CONSTS.standart_d20_dice_face_labels; margin = 1.0; break;
-                        case 'd20': face_labels = CONSTS.standart_d20_dice_face_labels; margin = 1.2; break;
-                        case 'd100': face_labels = CONSTS.standart_d100_dice_face_labels; margin = 1.5; break;
-                        default: face_labels = CONSTS.standart_d20_dice_face_labels; margin = 1.0;
+                    var materials;
+                    if (type === 'd4') {
+                        var variant = (dice.d4_variant !== undefined) ? dice.d4_variant : 0;
+                        materials = create_d4_materials(size, vars.scale * 2, CONSTS.d4_labels[variant], materialOptions, bodyColor, labelColor);
+                    } else {
+                        switch (type) {
+                            case 'd6':  face_labels = CONSTS.standart_d20_dice_face_labels; margin = 0.9; break;
+                            case 'd8':  face_labels = CONSTS.standart_d20_dice_face_labels; margin = 1.4; break;
+                            case 'd10': case 'd9': face_labels = CONSTS.standart_d20_dice_face_labels; margin = 1.0; break;
+                            case 'd12': face_labels = CONSTS.standart_d20_dice_face_labels; margin = 1.0; break;
+                            case 'd20': face_labels = CONSTS.standart_d20_dice_face_labels; margin = 1.2; break;
+                            case 'd100': face_labels = CONSTS.standart_d100_dice_face_labels; margin = 1.5; break;
+                            default: face_labels = CONSTS.standart_d20_dice_face_labels; margin = 1.0;
+                        }
+                        materials = create_dice_materials(face_labels, size, margin, materialOptions, bodyColor, labelColor);
                     }
-                    materials = create_dice_materials(face_labels, size, margin, materialOptions, bodyColor, labelColor);
+                    dice.material = new THREE.MeshFaceMaterial(materials);
+                    dice.dropped_visuals_applied = true;
+                    droppedCount++;
                 }
-
-                // Replace the material
-                dice.material = new THREE.MeshFaceMaterial(materials);
-                // Mark that we've applied dropped visuals (so we don't re-apply unnecessarily)
-                dice.dropped_visuals_applied = true;
             }
         }
-        console.log('Dice Roll: Dropped', droppedCount, 'dice.');
+        if (droppedCount > 0) {
+            console.log('Dice Roll: Dropped visuals applied to', droppedCount, 'physical dice (', combinedResults.filter(r=>!r.kept).length, 'logical dice )');
+        }
     }
+
+
     /**
      * Calculates the final numeric result.
      *
@@ -3276,6 +3231,7 @@ const DICE = (function() {
      * @param {number} margin
      * @param {Object} [materialOptions] - Optional override for material properties (e.g., color).
      * @param {number|string} [bodyColor] - Colour used as the background of the face texture.
+     * @param {string} [labelColor] - Colour of the label text.
      * @returns {THREE.Material[]}
      */
     function create_dice_materials(
@@ -3438,6 +3394,7 @@ const DICE = (function() {
      * @param {Array[]} labels
      * @param {Object} [materialOptions] - Optional override for material properties.
      * @param {number|string} [bodyColor] - Colour used as the background of the face texture.
+     * @param {string} [labelColor] - Colour of the label text.
      * @returns {THREE.Material[]}
      */
     function create_d4_materials(
@@ -3445,7 +3402,7 @@ const DICE = (function() {
         margin,
         labels,
         materialOptions,
-        bodyColor, 
+        bodyColor,
         labelColor
     ) {
         materialOptions = materialOptions || vars.material_options;
@@ -4803,10 +4760,12 @@ const DICE = (function() {
      * the eventual result.
      *
      * This is used when an external caller supplies authoritative results.
+     * For compound dice, the caller provides the full combined value (1-100),
+     * and this function splits it into tens and units, shifting each die accordingly.
      *
      * @param {THREE.Mesh} dice
-     * @param {number} value
-     * @param {number} res
+     * @param {number} value - The value to shift this die to (already split for compound)
+     * @param {number} res - The current face value of this die
      */
     function shift_dice_faces(
         dice,
