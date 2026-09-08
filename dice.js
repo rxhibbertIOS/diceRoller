@@ -87,7 +87,7 @@
  * The physics and rendering implementation remains intentionally separate
  * from notation parsing and result evaluation.
  */
-const DICE = (function() {
+var DICE = (function() {
 
     var that = {};
 
@@ -201,7 +201,11 @@ const DICE = (function() {
             0x952B5e, // pink
             0x00765e, // mint
             0x453b94  // indigo
-        ]
+        ],
+
+        linear_damping: 0.1,
+        angular_damping: 0.1,
+        spot_light_intensity: 2.0,
     };
 
 
@@ -348,6 +352,75 @@ const DICE = (function() {
         ]
     };
 
+    /**
+     * Configuration parameter definitions.
+     * Each entry: { type, min, max, default, description }
+     */
+    const CONFIG_DEFS = {
+    // Physics
+    gravity_x: { type: 'number', min: -10000, max: 10000, default: 0, description: 'X component of gravity' },
+    gravity_y: { type: 'number', min: -10000, max: 10000, default: 0, description: 'Y component of gravity' },
+    gravity_z: { type: 'number', min: -10000, max: 0, default: -9.8 * 800, description: 'Z component of gravity (downward)' },
+    solver_iterations: { type: 'integer', min: 1, max: 100, default: 16, description: 'Physics solver accuracy' },
+    dice_friction: { type: 'number', min: 0, max: 1, default: 0.01, description: 'Friction between dice and desk' },
+    dice_restitution: { type: 'number', min: 0, max: 1, default: 0.5, description: 'Bounciness between dice and desk' },
+    dice_dice_friction: { type: 'number', min: 0, max: 1, default: 0, description: 'Friction between dice' },
+    dice_dice_restitution: { type: 'number', min: 0, max: 1, default: 0.5, description: 'Bounciness between dice' },
+    linear_damping: { type: 'number', min: 0, max: 1, default: 0.1, description: 'Linear damping of dice' },
+    angular_damping: { type: 'number', min: 0, max: 1, default: 0.1, description: 'Angular damping of dice' },
+    use_adaptive_timestep: { type: 'boolean', default: true, description: 'Use adaptive timestep' },
+    frame_rate: { type: 'number', min: 0.001, max: 0.1, default: 1 / 60, description: 'Fixed timestep (seconds)' },
+
+    // Visuals
+    camera_distance: { type: 'number', min: 10, max: 5000, default: null, description: 'Camera Z distance (computed if null)' },
+    camera_fov: { type: 'number', min: 5, max: 90, default: 20, description: 'Camera field of view (degrees)' },
+    ambient_light_color: { type: 'color', default: '#f0f0f0', description: 'Ambient light colour' },
+    spot_light_color: { type: 'color', default: '#efefef', description: 'Spot light colour' },
+    spot_light_intensity: { type: 'number', min: 0, max: 10, default: 2.0, description: 'Spot light brightness' },
+    desk_color: { type: 'color', default: '#101010', description: 'Desk surface colour' },
+    desk_opacity: { type: 'number', min: 0, max: 1, default: 0.5, description: 'Desk opacity' },
+    use_shadows: { type: 'boolean', default: true, description: 'Enable shadows' },
+    dice_color: { type: 'color', default: '#202020', description: 'Default die body colour' },
+    label_color: { type: 'color', default: '#aaaaaa', description: 'Default label colour' },
+    dropped_dice_color: { type: 'color', default: '#4d4d4d', description: 'Dropped die colour' },
+    dropped_dice_label_color: { type: 'color', default: '#1a1a1a', description: 'Dropped die label colour' },
+
+    // Behaviour
+    d100_compound: { type: 'boolean', default: true, description: 'Roll d100 as tens + units' },
+    };
+
+    // Helper to get current values from vars or instance
+    function getConfigValue(name, instance) {
+        // Map config names to actual storage locations
+        const map = {
+            gravity_x: () => instance.world.gravity.x,
+            gravity_y: () => instance.world.gravity.y,
+            gravity_z: () => instance.world.gravity.z,
+            solver_iterations: () => instance.world.solver.iterations,
+            dice_friction: () => instance._deskDiceContact?.friction || 0.01,
+            dice_restitution: () => instance._deskDiceContact?.restitution || 0.5,
+            dice_dice_friction: () => instance._diceDiceContact?.friction || 0,
+            dice_dice_restitution: () => instance._diceDiceContact?.restitution || 0.5,
+            linear_damping: () => vars.linear_damping || 0.1,
+            angular_damping: () => vars.angular_damping || 0.1,
+            use_adaptive_timestep: () => vars.use_adaptive_timestep,
+            frame_rate: () => vars.frame_rate,
+            camera_distance: () => instance.camera?.position.z || instance.wh,
+            camera_fov: () => instance.camera?.fov || 20,
+            ambient_light_color: () => `#${vars.ambient_light_color.toString(16).padStart(6, '0')}`,
+            spot_light_color: () => `#${vars.spot_light_color.toString(16).padStart(6, '0')}`,
+            spot_light_intensity: () => vars.spot_light_intensity || 2.0,
+            desk_color: () => vars.desk_color,
+            desk_opacity: () => vars.desk_opacity,
+            use_shadows: () => vars.use_shadows,
+            dice_color: () => `#${vars.dice_color.toString(16).padStart(6, '0')}`,
+            label_color: () => vars.label_color,
+            dropped_dice_color: () => vars.dropped_dice_color,
+            dropped_dice_label_color: () => vars.dropped_dice_label_color,
+            d100_compound: () => vars.d100_compound,
+        };
+        return map[name] ? map[name]() : undefined;
+    }
 
     // ---------------------------------------------------------------------
     // DICE BOX
@@ -435,32 +508,29 @@ const DICE = (function() {
         var barrier_body_material = new CANNON.Material();
 
 
-        this.world.addContactMaterial(
-            new CANNON.ContactMaterial(
-                desk_body_material,
-                this.dice_body_material,
-                0.01,
-                0.5
-            )
+        this._deskDiceContact = new CANNON.ContactMaterial(
+            desk_body_material,
+            this.dice_body_material,
+            0.01,   // friction
+            0.5     // restitution
         );
+        this.world.addContactMaterial(this._deskDiceContact);
 
-        this.world.addContactMaterial(
-            new CANNON.ContactMaterial(
-                barrier_body_material,
-                this.dice_body_material,
-                0,
-                1.0
-            )
+        this._barrierDiceContact = new CANNON.ContactMaterial(
+            barrier_body_material,
+            this.dice_body_material,
+            0,
+            1.0
         );
+        this.world.addContactMaterial(this._barrierDiceContact);
 
-        this.world.addContactMaterial(
-            new CANNON.ContactMaterial(
-                this.dice_body_material,
-                this.dice_body_material,
-                0,
-                0.5
-            )
+        this._diceDiceContact = new CANNON.ContactMaterial(
+            this.dice_body_material,
+            this.dice_body_material,
+            0,      // friction
+            0.5     // restitution
         );
+        this.world.addContactMaterial(this._diceDiceContact);
 
 
         /*
@@ -735,10 +805,17 @@ const DICE = (function() {
      *        and the results have been evaluated.
      */
     that.dice_box.prototype.start_throw = function(
+        options,
         before_roll,
         after_roll
     ) {
 
+        if (typeof options === 'function') {
+            after_roll = before_roll;
+            before_roll = options;
+            options = {};
+        }
+        const opts = options || {};
         console.log('Dice Roll: Starting throw with notation:', this.diceToRoll);
 
         var box = this;
@@ -750,7 +827,7 @@ const DICE = (function() {
 
         try {
 
-            var vector = {
+            var vector = opts.vector || {
                 x: (rnd() * 2 - 1) * box.w,
                 y: -(rnd() * 2 - 1) * box.h
             };
@@ -762,7 +839,7 @@ const DICE = (function() {
             );
 
 
-            var boost = (rnd() + 3) * dist;
+            var boost = opts.boost || (rnd() + 3) * dist;
 
 
             throw_dices(
@@ -795,6 +872,58 @@ const DICE = (function() {
                 console.error('Dice Roll: Unhandled error in start_throw', err);
             }
         }
+    };
+
+    /**
+     * Rolls the dice with a random throw, optionally controlling the strength and direction.
+     *
+     * @param {Object} [options] - Configuration for the throw.
+     * @param {number} [options.minBoost=2.0] - Minimum boost multiplier (relative to distance).
+     * @param {number} [options.maxBoost=5.0] - Maximum boost multiplier.
+     * @param {number} [options.angle] - Direction in radians (0 = right, π/2 = up). If omitted, random.
+     * @param {Function} [before_roll] - Callback before the roll (receives notation, may return forced results).
+     * @param {Function} [after_roll] - Callback after the roll (receives notation).
+     * @returns {void}
+     */
+    that.dice_box.prototype.roll = function(options, before_roll, after_roll) {
+        // Allow calling as roll(before_roll, after_roll) for simplicity
+        if (typeof options === 'function') {
+            after_roll = before_roll;
+            before_roll = options;
+            options = {};
+        }
+        const opts = options || {};
+        const minBoost = opts.minBoost !== undefined ? opts.minBoost : 2.0;
+        const maxBoost = opts.maxBoost !== undefined ? opts.maxBoost : 5.0;
+        const angle = opts.angle;
+
+        const box = this;
+        if (box.rolling) {
+            console.warn('Dice Roll: Already rolling, ignoring request.');
+            return;
+        }
+
+        // Generate vector
+        let vector;
+        if (angle !== undefined) {
+            // Use a fixed direction (positive angle goes "up" in screen coords)
+            vector = {
+                x: Math.cos(angle) * box.w,
+                y: -Math.sin(angle) * box.h   // because y is flipped in 3D
+            };
+        } else {
+            vector = {
+                x: (rnd() * 2 - 1) * box.w,
+                y: -(rnd() * 2 - 1) * box.h
+            };
+        }
+        const dist = Math.sqrt(vector.x * vector.x + vector.y * vector.y);
+        // Boost factor uniformly random between minBoost and maxBoost
+        const boostFactor = rnd() * (maxBoost - minBoost) + minBoost;
+        const boost = boostFactor * dist;
+
+        // Call start_throw with the pre‑computed vector and boost
+        this.start_throw({ vector, boost }, before_roll, after_roll);
     };
 
 
@@ -2048,6 +2177,258 @@ const DICE = (function() {
         }
     };
 
+    /**
+     * Returns metadata for a given parameter, including its current value.
+     * @param {string} name - Parameter name.
+     * @returns {Object} { type, min, max, default, description, current }
+     */
+    that.dice_box.prototype.getParamInfo = function getParamInfo(name) {
+        const def = CONFIG_DEFS[name];
+        if (!def) throw new Error(`Unknown parameter "${name}"`);
+        const current = getConfigValue(name, this);
+        return { ...def, current };
+    };
+
+    /**
+     * Returns the current value of a parameter.
+     * @param {string} name - Parameter name.
+     * @returns {*} Current value.
+     */
+    that.dice_box.prototype.getParam = function getParam(name) {
+        const info = this.getParamInfo(name);
+        return info.current;
+    };
+
+    /**
+     * Sets a parameter to a new value and applies it.
+     * @param {string} name - Parameter name.
+     * @param {*} value - New value (will be validated and coerced).
+     * @returns {this} For chaining.
+     */
+    that.dice_box.prototype.setParam = function setParam(name, value) {
+        const def = CONFIG_DEFS[name];
+        if (!def) throw new Error(`Unknown parameter "${name}"`);
+
+        // Validate type and range
+        let parsed;
+        if (def.type === 'boolean') {
+            parsed = !!value;
+        } else if (def.type === 'integer') {
+            parsed = Math.round(Number(value));
+            if (!Number.isFinite(parsed)) throw new Error(`Expected an integer, got "${value}"`);
+            if (parsed < def.min || parsed > def.max) {
+                throw new Error(`Value must be between ${def.min} and ${def.max}`);
+            }
+        } else if (def.type === 'number') {
+            parsed = Number(value);
+            if (!Number.isFinite(parsed)) throw new Error(`Expected a number, got "${value}"`);
+            if (parsed < def.min || parsed > def.max) {
+                throw new Error(`Value must be between ${def.min} and ${def.max}`);
+            }
+        } else if (def.type === 'color') {
+            // Accept both hex strings and numbers
+            if (typeof value === 'string' && value.startsWith('#')) {
+                parsed = value;
+            } else if (typeof value === 'number') {
+                parsed = `#${value.toString(16).padStart(6, '0')}`;
+            } else {
+                throw new Error(`Expected a color string (#RRGGBB) or number`);
+            }
+        } else {
+            throw new Error(`Unsupported type "${def.type}" for "${name}"`);
+        }
+
+        // Apply the value to the appropriate storage
+        this._applyParam(name, parsed);
+
+        return this;
+    };
+
+    /**
+     * Applies a single parameter change (internal).
+     * @param {string} name - Parameter name.
+     * @param {*} value - Validated value.
+     */
+    that.dice_box.prototype._applyParam = function _applyParam(name, value) {
+        const instance = this;
+
+        switch (name) {
+            case 'gravity_x':
+            case 'gravity_y':
+            case 'gravity_z':
+                instance.world.gravity[name === 'gravity_x' ? 'x' : name === 'gravity_y' ? 'y' : 'z'] = value;
+                break;
+            case 'solver_iterations':
+                instance.world.solver.iterations = value;
+                break;
+            case 'dice_friction':
+            case 'dice_restitution':
+            case 'dice_dice_friction':
+            case 'dice_dice_restitution':
+                instance._updateContactMaterials();
+                break;
+            case 'linear_damping':
+            case 'angular_damping':
+                vars.linear_damping = value;
+                vars.angular_damping = value;
+                // Apply to existing dice
+                for (let i = 0; i < instance.dices.length; i++) {
+                    const body = instance.dices[i].body;
+                    if (body) {
+                        body.linearDamping = value;
+                        body.angularDamping = value;
+                    }
+                }
+                break;
+            case 'use_adaptive_timestep':
+                vars.use_adaptive_timestep = value;
+                break;
+            case 'frame_rate':
+                vars.frame_rate = Math.max(0.001, Math.min(0.1, value));
+                break;
+            case 'camera_distance':
+                if (instance.camera) {
+                    instance.camera.position.z = value;
+                    instance.camera.lookAt(0, 0, 0);
+                }
+                break;
+            case 'camera_fov':
+                if (instance.camera) {
+                    instance.camera.fov = value;
+                    instance.camera.updateProjectionMatrix();
+                }
+                break;
+            case 'ambient_light_color':
+                vars.ambient_light_color = colorToNumber(value);
+                instance._updateLighting();
+                break;
+            case 'spot_light_color':
+                vars.spot_light_color = colorToNumber(value);
+                instance._updateLighting();
+                break;
+            case 'spot_light_intensity':
+                vars.spot_light_intensity = value;
+                if (instance.light) {
+                    instance.light.intensity = value;
+                }
+                break;
+            case 'desk_color':
+                vars.desk_color = value;
+                if (instance.desk) {
+                    instance.desk.material.color.set(value);
+                }
+                break;
+            case 'desk_opacity':
+                vars.desk_opacity = value;
+                if (instance.desk) {
+                    instance.desk.material.opacity = value;
+                    instance.desk.material.transparent = value < 1;
+                    instance.desk.material.needsUpdate = true;
+                }
+                break;
+            case 'use_shadows':
+                vars.use_shadows = value;
+                instance.renderer.shadowMap.enabled = value;
+                if (instance.desk) instance.desk.receiveShadow = value;
+                for (let i = 0; i < instance.dices.length; i++) {
+                    instance.dices[i].castShadow = value;
+                }
+                break;
+            case 'dice_color':
+                vars.dice_color = colorToNumber(value);
+                break;
+            case 'label_color':
+                vars.label_color = value;
+                break;
+            case 'dropped_dice_color':
+                vars.dropped_dice_color = value;
+                break;
+            case 'dropped_dice_label_color':
+                vars.dropped_dice_label_color = value;
+                break;
+            case 'd100_compound':
+                vars.d100_compound = value;
+                break;
+            default:
+                throw new Error(`Unhandled parameter "${name}"`);
+        }
+    };
+
+    /**
+     * Returns a full copy of the current configuration.
+     * @returns {Object} Mapping of parameter names to values.
+     */
+    that.dice_box.prototype.getConfig = function getConfig() {
+        const result = {};
+        for (const name of Object.keys(CONFIG_DEFS)) {
+            result[name] = this.getParam(name);
+        }
+        return result;
+    };
+
+    /**
+     * Applies a batch of configuration changes.
+     * @param {Object} config - Mapping of parameter names to values.
+     * @returns {this}
+     */
+    that.dice_box.prototype.setConfig = function setConfig(config) {
+        for (const [name, value] of Object.entries(config)) {
+            this.setParam(name, value);
+        }
+        return this;
+    };
+
+    /**
+     * Rolls one of each die type for a preview.
+     * @param {Function} callback - Called with the notation result object.
+     */
+    that.dice_box.prototype.previewRoll = function previewRoll(callback) {
+        const notation = '1d4+1d6+1d8+1d10+1d12+1d20+1d100';
+        this.setDice(notation);
+        this.start_throw(null, (result) => {
+            if (callback) callback(result);
+        });
+    };
+
+    // Helper to convert CSS color to number (if needed)
+    function colorToNumber(color) {
+        if (typeof color === 'number') return color;
+        if (typeof color === 'string' && color.startsWith('#')) {
+            return parseInt(color.slice(1), 16);
+        }
+        return 0x808080;
+    }
+
+    // Helper to update contact materials (friction/restitution)
+    that.dice_box.prototype._updateContactMaterials = function _updateContactMaterials() {
+        // Rebuild the contact materials with current friction/restitution values
+        const deskFriction = vars.dice_friction || 0.01;
+        const deskRest = vars.dice_restitution || 0.5;
+        const diceFriction = vars.dice_dice_friction || 0;
+        const diceRest = vars.dice_dice_restitution || 0.5;
+
+        if (this._deskDiceContact) {
+            this._deskDiceContact.friction = deskFriction;
+            this._deskDiceContact.restitution = deskRest;
+        }
+        if (this._diceDiceContact) {
+            this._diceDiceContact.friction = diceFriction;
+            this._diceDiceContact.restitution = diceRest;
+        }
+    };
+
+    // Helper to update lighting
+    that.dice_box.prototype._updateLighting = function _updateLighting() {
+        for (let i = 0; i < this.scene.children.length; i++) {
+            const child = this.scene.children[i];
+            if (child instanceof THREE.AmbientLight) {
+                child.color.setHex(vars.ambient_light_color);
+            }
+        }
+        if (this.light) {
+            this.light.color.setHex(vars.spot_light_color);
+        }
+    };
 
     // ---------------------------------------------------------------------
     // NOTATION
@@ -2773,82 +3154,82 @@ const DICE = (function() {
      * @returns {Object[]} Combined results per logical die.
      */
     function combine_compound_results(rawResults, dices) {
-    // Build a map from physical dice ID to the mesh (to read forced_unit if any)
-    var diceMeshMap = {};
-    for (var i = 0; i < dices.length; i++) {
-        diceMeshMap[dices[i].dice_id] = dices[i];
-    }
+        // Build a map from physical dice ID to the mesh (to read forced_unit if any)
+        var diceMeshMap = {};
+        for (var i = 0; i < dices.length; i++) {
+            diceMeshMap[dices[i].dice_id] = dices[i];
+        }
 
-    // Separate compound and non‑compound results.
-    var compounds = {};
-    var nonCompound = [];
+        // Separate compound and non‑compound results.
+        var compounds = {};
+        var nonCompound = [];
 
-    for (var i = 0; i < rawResults.length; i++) {
-        var r = rawResults[i];
-        var mesh = diceMeshMap[r.diceId];
-        if (mesh && mesh.compoundId !== undefined) {
-            var cid = mesh.compoundId;
-            if (!compounds[cid]) {
-                compounds[cid] = {};
+        for (var i = 0; i < rawResults.length; i++) {
+            var r = rawResults[i];
+            var mesh = diceMeshMap[r.diceId];
+            if (mesh && mesh.compoundId !== undefined) {
+                var cid = mesh.compoundId;
+                if (!compounds[cid]) {
+                    compounds[cid] = {};
+                }
+                compounds[cid][mesh.role] = r;
+                compounds[cid]._mesh = mesh;
+            } else {
+                nonCompound.push(r);
             }
-            compounds[cid][mesh.role] = r;
-            compounds[cid]._mesh = mesh;
-        } else {
-            nonCompound.push(r);
         }
+
+        var combined = [];
+
+        // Process compounds
+        for (var cid in compounds) {
+            var comp = compounds[cid];
+            var tensResult = comp.tens;
+            var unitResult = comp.units;
+            if (!tensResult || !unitResult) {
+                console.warn('Dice Roll: Incomplete compound', cid);
+                continue;
+            }
+
+            // tensResult.value is the tens digit * 10 (e.g., 60 for face "60")
+            var tensDigit = tensResult.value / 10; // get 0-9
+            var unitDigit = unitResult.value;      // 0-9
+            // If forced unit is present, use it
+            var mesh = comp._mesh;
+            if (mesh && mesh.forced_unit !== undefined) {
+                unitDigit = mesh.forced_unit;
+                delete mesh.forced_unit;
+            }
+            var combinedValue = (tensDigit * 10) + unitDigit;
+            if (combinedValue === 0) {
+                combinedValue = 100;
+            }
+
+            combined.push({
+                diceId: tensResult.diceId,
+                groupId: tensResult.groupId,
+                type: tensResult.type,
+                value: combinedValue,
+                kept: true,
+                subResults: [tensResult, unitResult]
+            });
+        }
+
+        // Process non‑compound
+        for (var i = 0; i < nonCompound.length; i++) {
+            var r = nonCompound[i];
+            combined.push({
+                diceId: r.diceId,
+                groupId: r.groupId,
+                type: r.type,
+                value: r.value,
+                kept: true,
+                subResults: [r]
+            });
+        }
+
+        return combined;
     }
-
-    var combined = [];
-
-    // Process compounds
-    for (var cid in compounds) {
-        var comp = compounds[cid];
-        var tensResult = comp.tens;
-        var unitResult = comp.units;
-        if (!tensResult || !unitResult) {
-            console.warn('Dice Roll: Incomplete compound', cid);
-            continue;
-        }
-
-        // tensResult.value is the tens digit * 10 (e.g., 60 for face "60")
-        var tensDigit = tensResult.value / 10; // get 0-9
-        var unitDigit = unitResult.value;      // 0-9
-        // If forced unit is present, use it
-        var mesh = comp._mesh;
-        if (mesh && mesh.forced_unit !== undefined) {
-            unitDigit = mesh.forced_unit;
-            delete mesh.forced_unit;
-        }
-        var combinedValue = (tensDigit * 10) + unitDigit;
-        if (combinedValue === 0) {
-            combinedValue = 100;
-        }
-
-        combined.push({
-            diceId: tensResult.diceId,
-            groupId: tensResult.groupId,
-            type: tensResult.type,
-            value: combinedValue,
-            kept: true,
-            subResults: [tensResult, unitResult]
-        });
-    }
-
-    // Process non‑compound
-    for (var i = 0; i < nonCompound.length; i++) {
-        var r = nonCompound[i];
-        combined.push({
-            diceId: r.diceId,
-            groupId: r.groupId,
-            type: r.type,
-            value: r.value,
-            kept: true,
-            subResults: [r]
-        });
-    }
-
-    return combined;
-}
 
 
     /**
@@ -4845,10 +5226,14 @@ const DICE = (function() {
             dice.dice_type == 'd10' &&
             matindex == 0
         ) {
-
             matindex = 10;
         }
 
+        if (
+            dice.dice_type == 'd9' && matindex == 0
+        ) {
+            matindex = 9;
+        }
 
         return matindex;
     }
@@ -4950,6 +5335,17 @@ const DICE = (function() {
         if (
             dice.dice_type == 'd10' &&
             value == 10
+        ) {
+
+            value = 0;
+        }
+
+        /*
+         * Public d9 value 9 corresponds to internal face 0.
+         */
+        if (
+            dice.dice_type == 'd9' &&
+            value == 9
         ) {
 
             value = 0;
