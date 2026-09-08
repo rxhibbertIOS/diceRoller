@@ -29,68 +29,36 @@
  *   2d20kl1
  *   4d6dl1
  *   4d6dh1
+ *   2d6!          (explode on max)
+ *   4d6!>4        (explode on value > 4)
+ *   1d20r1        (reroll 1s until success)
+ *   1d20ro1       (reroll 1s once)
+ *   2d6!!         (compounding explosion)
+ *   1d10p         (penetrating, WoD)
+ *   4d6dl1!       (drop lowest, then explode kept)
+ *   2d20kh1!>15   (keep highest, then explode if >15)
  *
  * @author Anton Natarov aka Teal (original author)
  * @author Sarah Rosanna Busch (refactor, see changelog)
  * @author Rory Hibbert (refactor, see changelog)
  * @date 10 Aug 2023
- * @version 1.3
+ * @version 2.0 (with advanced rules and audit)
  * @dependencies teal.js, cannon.js, three.js
  */
 
-
 /**
- * CHANGELOG - Sarah Rosanna Busch
- *
- * - Tweaked scaling to make dice look nice on mobile.
- * - Removed dice selector feature (separating UI from dice roller).
- * - Reorganised file structure.
- * - Removed true random option.
- * - Removed mouse event bindings.
- * - Refactored into module pattern.
- * - Reduced publicly available properties/methods.
- * - Removed dice notation getter callback in favour of setting dice
- *   to roll directly.
- * - Added roll results to notation returned in after_roll callback.
- * - Added d9 option.
+ * CHANGELOG - v2.0
+ * - Added advanced notation parsing for explosions, rerolls, sorting, crits, target numbers.
+ * - Implemented recursive roll engine for dynamic dice (explosions/rerolls).
+ * - Added full audit trail with natural language output.
+ * - Group rules now stored as an array `rules` instead of a single `rule`.
+ * - Removed hard limit of 10 dice per group (now configurable via `max_dice_per_group`).
+ * - Added safety guards against infinite recursion.
  */
 
-
-/**
- * CHANGELOG - Rory Hibbert
- *
- * - Removed sound effects.
- * - Added structured dice groups.
- * - Added physical dice IDs.
- * - Added group IDs to physical dice.
- * - Added structured keep/drop rules.
- * - Added group-aware result evaluation.
- * - Added deterministic tie-breaking for keep/drop rules.
- * - Added rich dice result objects.
- * - Preserved backwards compatibility for notation.result.
- * - Added notation.diceResults for rich result information.
- * - Updated stringify_notation() to preserve rules.
- * - Added feature to change colour of 'dropped' dice.
- * - Added compound d100: each d100 now rolls both a tens die and a units die,
- *   and keep/drop rules operate on the combined 1-100 value.
- */
-
-
-/**
- * Main dice module.
- *
- * The module uses the original library's singleton/module pattern so that
- * existing consumers can continue to use:
- *
- *     const box = new DICE.dice_box(container);
- *
- * The physics and rendering implementation remains intentionally separate
- * from notation parsing and result evaluation.
- */
 var DICE = (function() {
 
     var that = {};
-
 
     /**
      * Error codes and their user‑friendly messages.
@@ -110,8 +78,9 @@ var DICE = (function() {
         VECTOR_GENERATION_FAILED: 'Failed to generate the physical dice vectors.',
         RENDER_FAILED: 'An error occurred during rendering or physics.',
         CALLBACK_ERROR: 'An error occurred in a user callback (before_roll or after_roll).',
+        RECURSION_DEPTH_EXCEEDED: 'Maximum recursion depth reached (infinite explosion/reroll loop).',
+        TOO_MANY_DICE: 'Too many dice generated (exceeded safety limit).',
     };
-
 
     /**
      * Creates a structured error object for the dice engine.
@@ -136,7 +105,6 @@ var DICE = (function() {
         console.error('Dice Roll: [' + code + '] ' + userMsg, err);
         return err;
     }
-
 
     /**
      * Internal rendering and physics configuration.
@@ -206,8 +174,11 @@ var DICE = (function() {
         linear_damping: 0.1,
         angular_damping: 0.1,
         spot_light_intensity: 2.0,
-    };
 
+        // New settings for advanced rules
+        max_recursion_depth: 10,        // prevent infinite loops
+        max_dice_per_roll: 100,         // safety cap for total dice
+    };
 
     /**
      * Constants used by the dice engine.
@@ -387,6 +358,8 @@ var DICE = (function() {
 
     // Behaviour
     d100_compound: { type: 'boolean', default: true, description: 'Roll d100 as tens + units' },
+    max_recursion_depth: { type: 'integer', min: 1, max: 50, default: 10, description: 'Maximum explosion/reroll recursions' },
+    max_dice_per_roll: { type: 'integer', min: 1, max: 500, default: 100, description: 'Safety cap on total dice generated' },
     };
 
     // Helper to get current values from vars or instance
@@ -418,6 +391,8 @@ var DICE = (function() {
             dropped_dice_color: () => vars.dropped_dice_color,
             dropped_dice_label_color: () => vars.dropped_dice_label_color,
             d100_compound: () => vars.d100_compound,
+            max_recursion_depth: () => vars.max_recursion_depth,
+            max_dice_per_roll: () => vars.max_dice_per_roll,
         };
         return map[name] ? map[name]() : undefined;
     }
@@ -425,7 +400,6 @@ var DICE = (function() {
     // ---------------------------------------------------------------------
     // DICE BOX
     // ---------------------------------------------------------------------
-
 
     /**
      * Creates a new dice box.
@@ -451,7 +425,6 @@ var DICE = (function() {
 
         this.container = container;
 
-
         this.renderer = window.WebGLRenderingContext
             ? new THREE.WebGLRenderer({
                 antialias: true,
@@ -468,18 +441,11 @@ var DICE = (function() {
         this.renderer.shadowMap.type = THREE.PCFShadowMap;
         this.renderer.setClearColor(0xffffff, 0);
 
-
         this.reinit(container);
 
-
         $t.bind(container, 'resize', function() {
-
-            /*
-             * Fixed: use this.container instead of undefined elem.canvas
-             */
             this.reinit(this.container);
         });
-
 
         /*
          * Physics world setup.
@@ -488,25 +454,20 @@ var DICE = (function() {
         this.world.broadphase = new CANNON.NaiveBroadphase();
         this.world.solver.iterations = 16;
 
-
         /*
          * Ambient lighting.
          */
         var ambientLight = new THREE.AmbientLight(
             vars.ambient_light_color
         );
-
         this.scene.add(ambientLight);
-
 
         /*
          * Cannon materials.
          */
         this.dice_body_material = new CANNON.Material();
-
         var desk_body_material = new CANNON.Material();
         var barrier_body_material = new CANNON.Material();
-
 
         this._deskDiceContact = new CANNON.ContactMaterial(
             desk_body_material,
@@ -532,7 +493,6 @@ var DICE = (function() {
         );
         this.world.addContactMaterial(this._diceDiceContact);
 
-
         /*
          * Desk.
          */
@@ -544,7 +504,6 @@ var DICE = (function() {
             )
         );
 
-
         /*
          * Four invisible physics barriers around the dice tray.
          */
@@ -555,80 +514,48 @@ var DICE = (function() {
             new CANNON.Plane(),
             barrier_body_material
         );
-
         barrier.quaternion.setFromAxisAngle(
             new CANNON.Vec3(1, 0, 0),
             Math.PI / 2
         );
-
-        barrier.position.set(
-            0,
-            this.h * 0.93,
-            0
-        );
-
+        barrier.position.set(0, this.h * 0.93, 0);
         this.world.add(barrier);
-
 
         barrier = new CANNON.RigidBody(
             0,
             new CANNON.Plane(),
             barrier_body_material
         );
-
         barrier.quaternion.setFromAxisAngle(
             new CANNON.Vec3(1, 0, 0),
             -Math.PI / 2
         );
-
-        barrier.position.set(
-            0,
-            -this.h * 0.93,
-            0
-        );
-
+        barrier.position.set(0, -this.h * 0.93, 0);
         this.world.add(barrier);
-
 
         barrier = new CANNON.RigidBody(
             0,
             new CANNON.Plane(),
             barrier_body_material
         );
-
         barrier.quaternion.setFromAxisAngle(
             new CANNON.Vec3(0, 1, 0),
             -Math.PI / 2
         );
-
-        barrier.position.set(
-            this.w * 0.93,
-            0,
-            0
-        );
-
+        barrier.position.set(this.w * 0.93, 0, 0);
         this.world.add(barrier);
-
 
         barrier = new CANNON.RigidBody(
             0,
             new CANNON.Plane(),
             barrier_body_material
         );
-
         barrier.quaternion.setFromAxisAngle(
             new CANNON.Vec3(0, 1, 0),
             Math.PI / 2
         );
-
-        barrier.position.set(
-            -this.w * 0.93,
-            0,
-            0
-        );
-
+        barrier.position.set(-this.w * 0.93, 0, 0);
         this.world.add(barrier);
-
 
         this.last_time = 0;
         this.running = false;
@@ -638,7 +565,6 @@ var DICE = (function() {
             this.camera
         );
     };
-
 
     /**
      * Reinitialises camera, lighting and desk dimensions.
@@ -666,23 +592,19 @@ var DICE = (function() {
                 this.h * this.h
             ) / 8;
 
-
         this.renderer.setSize(
             this.cw * 2,
             this.ch * 2
         );
-
 
         this.wh =
             this.ch /
             this.aspect /
             Math.tan(10 * Math.PI / 180);
 
-
         if (this.camera) {
             this.scene.remove(this.camera);
         }
-
 
         this.camera = new THREE.PerspectiveCamera(
             20,
@@ -690,58 +612,45 @@ var DICE = (function() {
             1,
             this.wh * 1.3
         );
-
         this.camera.position.z = this.wh;
-
 
         var mw = Math.max(
             this.w,
             this.h
         );
 
-
         if (this.light) {
             this.scene.remove(this.light);
         }
-
 
         this.light = new THREE.SpotLight(
             vars.spot_light_color,
             2.0
         );
-
         this.light.position.set(
             -mw / 2,
             mw / 2,
             mw * 2
         );
-
         this.light.target.position.set(
             0,
             0,
             0
         );
-
         this.light.distance = mw * 5;
         this.light.castShadow = true;
-
         this.light.shadowCameraNear = mw / 10;
         this.light.shadowCameraFar = mw * 5;
         this.light.shadowCameraFov = 50;
-
         this.light.shadowBias = 0.001;
         this.light.shadowDarkness = 1.1;
-
         this.light.shadowMapWidth = 1024;
         this.light.shadowMapHeight = 1024;
-
         this.scene.add(this.light);
-
 
         if (this.desk) {
             this.scene.remove(this.desk);
         }
-
 
         this.desk = new THREE.Mesh(
             new THREE.PlaneGeometry(
@@ -756,18 +665,14 @@ var DICE = (function() {
                 transparent: true
             })
         );
-
         this.desk.receiveShadow = vars.use_shadows;
-
         this.scene.add(this.desk);
-
 
         this.renderer.render(
             this.scene,
             this.camera
         );
     };
-
 
     /**
      * Sets the dice notation to be rolled.
@@ -781,6 +686,7 @@ var DICE = (function() {
      *     box.setDice('3d6');
      *     box.setDice('2d20kh1');
      *     box.setDice('4d6dl1 + 5');
+     *     box.setDice('2d6! + 1d20r1');
      *
      * @param {string} diceToRoll
      */
@@ -788,17 +694,16 @@ var DICE = (function() {
         this.diceToRoll = diceToRoll;
     };
 
-
     /**
      * Starts a programmatic dice throw.
      *
      * @param {Function} before_roll
      *        Optional callback called after parsing but before physics begins.
-     *
      *        The callback receives the parsed notation object and may return
      *        an array of desired numeric dice results. This is useful when
      *        the application already has authoritative results and only wants
      *        the 3D dice to visually reproduce them.
+     *        (For recursive rolls, only the first phase receives forced results.)
      *
      * @param {Function} after_roll
      *        Optional callback called after the physical roll has completed
@@ -832,15 +737,12 @@ var DICE = (function() {
                 y: -(rnd() * 2 - 1) * box.h
             };
 
-
             var dist = Math.sqrt(
                 vector.x * vector.x +
                 vector.y * vector.y
             );
 
-
             var boost = opts.boost || (rnd() + 3) * dist;
-
 
             throw_dices(
                 box,
@@ -864,7 +766,9 @@ var DICE = (function() {
                 result: [],
                 diceResults: [],
                 resultTotal: 0,
-                resultString: ''
+                resultString: '',
+                audit: [],
+                auditString: ''
             };
             if (after_roll) {
                 after_roll(errorNotation);
@@ -886,7 +790,6 @@ var DICE = (function() {
      * @returns {void}
      */
     that.dice_box.prototype.roll = function(options, before_roll, after_roll) {
-        // Allow calling as roll(before_roll, after_roll) for simplicity
         if (typeof options === 'function') {
             after_roll = before_roll;
             before_roll = options;
@@ -903,13 +806,11 @@ var DICE = (function() {
             return;
         }
 
-        // Generate vector
         let vector;
         if (angle !== undefined) {
-            // Use a fixed direction (positive angle goes "up" in screen coords)
             vector = {
                 x: Math.cos(angle) * box.w,
-                y: -Math.sin(angle) * box.h   // because y is flipped in 3D
+                y: -Math.sin(angle) * box.h
             };
         } else {
             vector = {
@@ -918,14 +819,11 @@ var DICE = (function() {
             };
         }
         const dist = Math.sqrt(vector.x * vector.x + vector.y * vector.y);
-        // Boost factor uniformly random between minBoost and maxBoost
         const boostFactor = rnd() * (maxBoost - minBoost) + minBoost;
         const boost = boostFactor * dist;
 
-        // Call start_throw with the pre‑computed vector and boost
         this.start_throw({ vector, boost }, before_roll, after_roll);
     };
-
 
     /**
      * Binds swipe gestures to a container.
@@ -944,78 +842,51 @@ var DICE = (function() {
 
         let box = this;
 
-
         $t.bind(
             container,
             ['mousedown', 'touchstart'],
             function(ev) {
-
                 ev.preventDefault();
-
                 box.mouse_time = (new Date()).getTime();
                 box.mouse_start = $t.get_mouse_coords(ev);
             }
         );
 
-
         $t.bind(
             container,
             ['mouseup', 'touchend'],
             function(ev) {
-
                 if (box.rolling) {
                     return;
                 }
-
                 if (box.mouse_start == undefined) {
                     return;
                 }
-
-
                 var m = $t.get_mouse_coords(ev);
-
-
                 var vector = {
                     x: m.x - box.mouse_start.x,
                     y: -(m.y - box.mouse_start.y)
                 };
-
-
                 box.mouse_start = undefined;
-
-
                 var dist = Math.sqrt(
                     vector.x * vector.x +
                     vector.y * vector.y
                 );
-
-
-                if (
-                    dist <
-                    Math.sqrt(box.w * box.h * 0.01)
-                ) {
+                if (dist < Math.sqrt(box.w * box.h * 0.01)) {
                     return;
                 }
-
-
                 var time_int =
                     (new Date()).getTime() -
                     box.mouse_time;
-
-
                 if (time_int > 2000) {
                     time_int = 2000;
                 }
-
-
                 var boost =
                     Math.sqrt(
                         (2500 - time_int) / 2500
                     ) *
                     dist *
                     2;
-
-
                 throw_dices(
                     box,
                     vector,
@@ -1028,29 +899,1022 @@ var DICE = (function() {
         );
     };
 
+    // ---------------------------------------------------------------------
+    // NOTATION PARSER (EXTENDED)
+    // ---------------------------------------------------------------------
 
     /**
-     * Performs a complete throw lifecycle.
+     * Parses a dice notation string with support for advanced rules.
      *
-     * The important distinction here is between:
+     * Supported rules (applied in order):
+     *   - khN / klN / dhN / dlN  (keep/drop highest/lowest)
+     *   - ! or !>N               (explode on max or >N)
+     *   - !! or !!>N             (compounding explosion)
+     *   - p                      (penetrating, WoD style – subtract 1 on each explosion)
+     *   - rN or r>N              (reroll until success, condition value < N or >N)
+     *   - roN or ro>N            (reroll exactly once)
+     *   - er                     (explode & reroll 1s)
+     *   - sa / sd                (sort ascending/descending)
+     *   - cs>N                   (critical success if value > N)
+     *   - cf<N                   (critical failure if value < N)
+     *   - tN                     (count successes, value >= N)
+     *   - fN                     (count failures, value < N)
      *
-     *   notation.result
-     *       Backwards-compatible numeric array containing ONLY kept results.
+     * Rules are stored in a `rules` array on each group.
      *
-     *   notation.diceResults
-     *       Rich result objects for every physical die, including dropped
-     *       dice and metadata identifying their group and physical die.
-     *
-     * Keeping these separate means existing consumers of the original API
-     * do not suddenly receive objects instead of numbers.
-     *
-     * @param {Object} box
-     * @param {Object} vector
-     * @param {number} boost
-     * @param {number} dist
-     * @param {Function} before_roll
-     * @param {Function} after_roll
+     * @param {string} notation
+     * @returns {Object} parsed notation object with `groups`, `set`, `constant`, `audit`, etc.
      */
+    that.parse_notation = function(notation) {
+
+        var ret = {
+            groups: [],
+            set: [],
+            constant: 0,
+            result: [],
+            diceResults: [],
+            resultTotal: 0,
+            resultString: '',
+            audit: [],      // will be populated during rolling
+            auditString: '',
+            error: false,
+            errorCode: null,
+            errorMessage: null,
+            errorStack: null
+        };
+
+        var supportedDice = [
+            'd4', 'd6', 'd8', 'd9', 'd10', 'd12', 'd20', 'd100'
+        ];
+
+        if (typeof notation !== 'string' || notation.trim().length === 0) {
+            ret.error = true;
+            ret.errorCode = 'EMPTY_NOTATION';
+            ret.errorMessage = DICE_ERRORS.EMPTY_NOTATION;
+            console.warn('Dice Roll: Empty or invalid notation string.');
+            return ret;
+        }
+
+        // Remove @... part (legacy)
+        var source = notation.split('@')[0].replace(/\s+/g, '');
+        if (source.length === 0) {
+            ret.error = true;
+            ret.errorCode = 'EMPTY_NOTATION';
+            ret.errorMessage = DICE_ERRORS.EMPTY_NOTATION;
+            return ret;
+        }
+
+        var terms = source.split(/(?=[+-])/);
+
+        for (var termIndex = 0; termIndex < terms.length; termIndex++) {
+            var term = terms[termIndex];
+            if (!term) continue;
+
+            var sign = 1;
+            if (term.charAt(0) === '+') {
+                term = term.substring(1);
+            } else if (term.charAt(0) === '-') {
+                sign = -1;
+                term = term.substring(1);
+            }
+            if (!term) continue;
+
+            // ----- Dice term with advanced rules -----
+            // We'll match: (count)d(sides)(rule1)(rule2)...
+            // Rules are appended directly: e.g., 2d6!kh1, 4d6dl1!>4, 1d20r1
+            // We'll parse by extracting the base dice part first, then the rules.
+            var diceMatch = term.match(/^(\d*)d(\d+)/i);
+            if (diceMatch) {
+                var count = diceMatch[1] === '' ? 1 : parseInt(diceMatch[1], 10);
+                var type = 'd' + diceMatch[2];
+                var rulesStr = term.substring(diceMatch[0].length); // the rest
+
+                if (sign < 0) {
+                    ret.error = true;
+                    ret.errorCode = 'NEGATIVE_DICE_TERM';
+                    ret.errorMessage = DICE_ERRORS.NEGATIVE_DICE_TERM + ' (' + term + ')';
+                    continue;
+                }
+
+                if (count <= 0) {
+                    ret.error = true;
+                    ret.errorCode = 'ZERO_DICE';
+                    ret.errorMessage = DICE_ERRORS.ZERO_DICE;
+                    continue;
+                }
+
+                if (supportedDice.indexOf(type) === -1) {
+                    ret.error = true;
+                    ret.errorCode = 'UNSUPPORTED_DIE';
+                    ret.errorMessage = DICE_ERRORS.UNSUPPORTED_DIE + ' (' + type + ')';
+                    continue;
+                }
+
+                // Parse rules from the suffix
+                var rules = [];
+                var remaining = rulesStr;
+
+                // We'll parse sequentially using regex matches for each rule type
+                while (remaining.length > 0) {
+                    var matched = false;
+
+                    // khN, klN, dhN, dlN
+                    var m = remaining.match(/^(kh|kl|dh|dl)(\d+)/i);
+                    if (m) {
+                        var ruleType = m[1].toLowerCase();
+                        var countNum = parseInt(m[2], 10);
+                        if (countNum > count) {
+                            ret.error = true;
+                            ret.errorCode = 'RULE_COUNT_EXCEEDS_DICE';
+                            ret.errorMessage = DICE_ERRORS.RULE_COUNT_EXCEEDS_DICE + ' (' + countNum + ' > ' + count + ')';
+                            // Still continue, but mark error
+                        }
+                        var ruleMap = {
+                            'kh': 'keep-highest',
+                            'kl': 'keep-lowest',
+                            'dh': 'drop-highest',
+                            'dl': 'drop-lowest'
+                        };
+                        rules.push({
+                            type: ruleMap[ruleType],
+                            count: countNum
+                        });
+                        remaining = remaining.substring(m[0].length);
+                        matched = true;
+                        continue;
+                    }
+
+                    // ! or !>N (explode)
+                    m = remaining.match(/^!>(?:\s*)(\d+)/);
+                    if (m) {
+                        rules.push({
+                            type: 'explode',
+                            threshold: parseInt(m[1], 10),
+                            condition: 'greater-than'
+                        });
+                        remaining = remaining.substring(m[0].length);
+                        matched = true;
+                        continue;
+                    }
+                    m = remaining.match(/^!/);
+                    if (m) {
+                        rules.push({
+                            type: 'explode',
+                            threshold: 'max'
+                        });
+                        remaining = remaining.substring(m[0].length);
+                        matched = true;
+                        continue;
+                    }
+
+                    // !! or !!>N (compounding explode)
+                    m = remaining.match(/^!!>(?:\s*)(\d+)/);
+                    if (m) {
+                        rules.push({
+                            type: 'explode-compounding',
+                            threshold: parseInt(m[1], 10),
+                            condition: 'greater-than'
+                        });
+                        remaining = remaining.substring(m[0].length);
+                        matched = true;
+                        continue;
+                    }
+                    m = remaining.match(/^!!/);
+                    if (m) {
+                        rules.push({
+                            type: 'explode-compounding',
+                            threshold: 'max'
+                        });
+                        remaining = remaining.substring(m[0].length);
+                        matched = true;
+                        continue;
+                    }
+
+                    // p (penetrating)
+                    m = remaining.match(/^p/);
+                    if (m) {
+                        rules.push({
+                            type: 'penetrate'
+                        });
+                        remaining = remaining.substring(m[0].length);
+                        matched = true;
+                        continue;
+                    }
+
+                    // rN or r>N (reroll until)
+                    m = remaining.match(/^r>(?:\s*)(\d+)/);
+                    if (m) {
+                        rules.push({
+                            type: 'reroll',
+                            threshold: parseInt(m[1], 10),
+                            condition: 'greater-than',
+                            once: false
+                        });
+                        remaining = remaining.substring(m[0].length);
+                        matched = true;
+                        continue;
+                    }
+                    m = remaining.match(/^r(\d+)/);
+                    if (m) {
+                        rules.push({
+                            type: 'reroll',
+                            threshold: parseInt(m[1], 10),
+                            condition: 'less-than',
+                            once: false
+                        });
+                        remaining = remaining.substring(m[0].length);
+                        matched = true;
+                        continue;
+                    }
+
+                    // roN or ro>N (reroll once)
+                    m = remaining.match(/^ro>(?:\s*)(\d+)/);
+                    if (m) {
+                        rules.push({
+                            type: 'reroll',
+                            threshold: parseInt(m[1], 10),
+                            condition: 'greater-than',
+                            once: true
+                        });
+                        remaining = remaining.substring(m[0].length);
+                        matched = true;
+                        continue;
+                    }
+                    m = remaining.match(/^ro(\d+)/);
+                    if (m) {
+                        rules.push({
+                            type: 'reroll',
+                            threshold: parseInt(m[1], 10),
+                            condition: 'less-than',
+                            once: true
+                        });
+                        remaining = remaining.substring(m[0].length);
+                        matched = true;
+                        continue;
+                    }
+
+                    // er (explode & reroll 1s) – we can treat as two rules: reroll 1 and explode on max
+                    m = remaining.match(/^er/);
+                    if (m) {
+                        rules.push({
+                            type: 'reroll',
+                            threshold: 1,
+                            condition: 'less-than',
+                            once: false
+                        });
+                        rules.push({
+                            type: 'explode',
+                            threshold: 'max'
+                        });
+                        remaining = remaining.substring(m[0].length);
+                        matched = true;
+                        continue;
+                    }
+
+                    // sa / sd (sort)
+                    m = remaining.match(/^sa/);
+                    if (m) {
+                        rules.push({ type: 'sort-ascending' });
+                        remaining = remaining.substring(m[0].length);
+                        matched = true;
+                        continue;
+                    }
+                    m = remaining.match(/^sd/);
+                    if (m) {
+                        rules.push({ type: 'sort-descending' });
+                        remaining = remaining.substring(m[0].length);
+                        matched = true;
+                        continue;
+                    }
+
+                    // cs>N (critical success)
+                    m = remaining.match(/^cs>(?:\s*)(\d+)/);
+                    if (m) {
+                        rules.push({
+                            type: 'critical-success',
+                            threshold: parseInt(m[1], 10)
+                        });
+                        remaining = remaining.substring(m[0].length);
+                        matched = true;
+                        continue;
+                    }
+
+                    // cf<N (critical failure)
+                    m = remaining.match(/^cf<(?:\s*)(\d+)/);
+                    if (m) {
+                        rules.push({
+                            type: 'critical-failure',
+                            threshold: parseInt(m[1], 10)
+                        });
+                        remaining = remaining.substring(m[0].length);
+                        matched = true;
+                        continue;
+                    }
+
+                    // tN (target number – count successes)
+                    m = remaining.match(/^t(?:\s*)(\d+)/);
+                    if (m) {
+                        rules.push({
+                            type: 'target-number',
+                            threshold: parseInt(m[1], 10)
+                        });
+                        remaining = remaining.substring(m[0].length);
+                        matched = true;
+                        continue;
+                    }
+
+                    // fN (count failures)
+                    m = remaining.match(/^f(?:\s*)(\d+)/);
+                    if (m) {
+                        rules.push({
+                            type: 'failures',
+                            threshold: parseInt(m[1], 10)
+                        });
+                        remaining = remaining.substring(m[0].length);
+                        matched = true;
+                        continue;
+                    }
+
+                    // If nothing matched, break to avoid infinite loop
+                    if (!matched) {
+                        ret.error = true;
+                        ret.errorCode = 'INVALID_RULE';
+                        ret.errorMessage = DICE_ERRORS.INVALID_RULE + ' (unrecognised rule "' + remaining + '")';
+                        console.warn('Dice Roll: Unrecognised rule suffix:', remaining);
+                        break;
+                    }
+                }
+
+                // Create the group
+                var group = {
+                    id: ret.groups.length,
+                    count: count,
+                    type: type,
+                    rules: rules,
+                    visual: null,
+                    isCompound: (type === 'd100' && vars.d100_compound)
+                };
+
+                ret.groups.push(group);
+
+                // Maintain flattened set (for backward compatibility)
+                if (group.isCompound) {
+                    for (var i = 0; i < count; i++) {
+                        ret.set.push('d100');
+                        ret.set.push('d10');
+                    }
+                } else {
+                    for (var i = 0; i < count; i++) {
+                        ret.set.push(type);
+                    }
+                }
+
+                continue;
+            }
+
+            // Constant term
+            var constantMatch = term.match(/^\d+$/);
+            if (constantMatch) {
+                ret.constant += sign * parseInt(term, 10);
+                continue;
+            }
+
+            // Unrecognised
+            ret.error = true;
+            ret.errorCode = 'INVALID_NOTATION';
+            ret.errorMessage = DICE_ERRORS.INVALID_NOTATION + ' (unrecognised term "' + term + '")';
+            console.warn('Dice Roll: Unrecognised term:', term);
+        }
+
+        if (ret.set.length === 0) {
+            ret.error = true;
+            ret.errorCode = 'NO_DICE';
+            ret.errorMessage = DICE_ERRORS.NO_DICE;
+            console.warn('Dice Roll: No dice in notation (constant-only expressions are not allowed).');
+        }
+
+        if (!ret.error) {
+            console.log('Dice Roll: Notation parsed successfully. Groups:', ret.groups.length, 'Physical dice:', ret.set.length);
+        } else {
+            console.warn('Dice Roll: Notation parse had errors. Results may be incomplete.');
+        }
+
+        return ret;
+    };
+
+    /**
+     * Converts a parsed notation object back into dice notation.
+     * This serializes the rules array.
+     *
+     * @param {Object} nn - parsed notation object
+     * @returns {string}
+     */
+    that.stringify_notation = function(nn) {
+        var notation = '';
+
+        if (nn && Array.isArray(nn.groups) && nn.groups.length) {
+            for (var i = 0; i < nn.groups.length; i++) {
+                var group = nn.groups[i];
+                if (notation.length) notation += ' + ';
+
+                if (group.count !== 1) notation += group.count;
+                notation += group.type;
+
+                // Serialize rules in order
+                if (group.rules && group.rules.length) {
+                    for (var r = 0; r < group.rules.length; r++) {
+                        var rule = group.rules[r];
+                        switch (rule.type) {
+                            case 'keep-highest': notation += 'kh' + rule.count; break;
+                            case 'keep-lowest': notation += 'kl' + rule.count; break;
+                            case 'drop-highest': notation += 'dh' + rule.count; break;
+                            case 'drop-lowest': notation += 'dl' + rule.count; break;
+                            case 'explode':
+                                if (rule.threshold === 'max') notation += '!';
+                                else notation += '!>' + rule.threshold;
+                                break;
+                            case 'explode-compounding':
+                                if (rule.threshold === 'max') notation += '!!';
+                                else notation += '!!>' + rule.threshold;
+                                break;
+                            case 'penetrate': notation += 'p'; break;
+                            case 'reroll':
+                                if (rule.once) {
+                                    if (rule.condition === 'less-than') notation += 'ro' + rule.threshold;
+                                    else notation += 'ro>' + rule.threshold;
+                                } else {
+                                    if (rule.condition === 'less-than') notation += 'r' + rule.threshold;
+                                    else notation += 'r>' + rule.threshold;
+                                }
+                                break;
+                            case 'sort-ascending': notation += 'sa'; break;
+                            case 'sort-descending': notation += 'sd'; break;
+                            case 'critical-success': notation += 'cs>' + rule.threshold; break;
+                            case 'critical-failure': notation += 'cf<' + rule.threshold; break;
+                            case 'target-number': notation += 't' + rule.threshold; break;
+                            case 'failures': notation += 'f' + rule.threshold; break;
+                            default: break;
+                        }
+                    }
+                }
+            }
+        } else {
+            // Legacy fallback
+            var dict = {};
+            for (var i = 0; i < nn.set.length; i++) {
+                if (!dict[nn.set[i]]) dict[nn.set[i]] = 1;
+                else ++dict[nn.set[i]];
+            }
+            for (var type in dict) {
+                if (notation.length) notation += ' + ';
+                notation += (dict[type] > 1 ? dict[type] : '') + type;
+            }
+        }
+
+        if (nn.constant) {
+            if (notation.length) {
+                if (nn.constant > 0) notation += ' + ' + nn.constant;
+                else notation += ' - ' + Math.abs(nn.constant);
+            } else {
+                notation += nn.constant;
+            }
+        }
+
+        return notation;
+    };
+
+    // ---------------------------------------------------------------------
+    // AUDIT SYSTEM
+    // ---------------------------------------------------------------------
+
+    /**
+     * Logs an event to the audit trail.
+     *
+     * @param {Array} audit - The audit array.
+     * @param {number} phase - Recursion depth (0 for initial).
+     * @param {string} type - Event type (parse, roll, drop, keep, explode, reroll, sort, final, etc.).
+     * @param {string} description - Human‑readable description (can be a template).
+     * @param {Object} [details] - Structured data (dice IDs, values, rule, etc.).
+     */
+    function logEvent(audit, phase, type, description, details) {
+        var step = audit.length;
+        audit.push({
+            step: step,
+            phase: phase,
+            type: type,
+            description: description,
+            details: details || {}
+        });
+    }
+
+    /**
+     * Renders the audit trail as a natural language string.
+     *
+     * @param {Array} audit
+     * @returns {string}
+     */
+    that.formatAudit = function(audit) {
+        var lines = [];
+        for (var i = 0; i < audit.length; i++) {
+            var entry = audit[i];
+            var line = 'Step ' + entry.step + ': ' + entry.description;
+            lines.push(line);
+        }
+        return lines.join('\n');
+    };
+
+    // ---------------------------------------------------------------------
+    // DICE VALUE HELPERS
+    // ---------------------------------------------------------------------
+
+    /**
+     * Returns a random face value for a given die type (logical, not physical).
+     *
+     * @param {string} type - e.g., 'd6', 'd20'
+     * @returns {number} - value in the appropriate range (d10 returns 1-10, d9 returns 0-9? We'll treat d9 as 0-9 for consistency)
+     */
+    function roll_die_value(type) {
+        var range = CONSTS.dice_face_range[type];
+        if (!range) return 0;
+        var val = Math.floor(Math.random() * (range[1] - range[0] + 1)) + range[0];
+        // For d10, convert 0 to 10 (public notation)
+        if (type === 'd10' && val === 0) val = 10;
+        // For d9, convert 0 to 9
+        if (type === 'd9' && val === 0) val = 9;
+        // d100 tens digit returns 0-9, but combined later
+        return val;
+    }
+
+    /**
+     * Returns the maximum logical value of a die type.
+     */
+    function die_max_value(type) {
+        var range = CONSTS.dice_face_range[type];
+        if (!range) return 0;
+        // For d10 we want 10, not 9
+        if (type === 'd10') return 10;
+        if (type === 'd9') return 9;
+        return range[1];
+    }
+
+    /**
+     * Checks if a die value should explode based on the rule.
+     */
+    function should_explode(value, rule) {
+        if (rule.threshold === 'max') {
+            // We need the type; we'll pass type separately.
+            return false; // will be handled by caller with type
+        }
+        if (rule.condition === 'greater-than') {
+            return value > rule.threshold;
+        }
+        return false;
+    }
+
+    /**
+     * Checks if a die should be rerolled.
+     */
+    function should_reroll(value, rule) {
+        if (rule.condition === 'less-than') {
+            return value < rule.threshold;
+        } else if (rule.condition === 'greater-than') {
+            return value > rule.threshold;
+        }
+        return false;
+    }
+
+    // ---------------------------------------------------------------------
+    // RECURSIVE ROLL ENGINE
+    // ---------------------------------------------------------------------
+
+    /**
+     * Builds the next notation object from dice that need to be re‑rolled
+     * (explosions or rerolls).
+     *
+     * @param {Array} explodedDice - Array of combined dice that exploded.
+     * @param {Array} rerolledDice - Array of combined dice that need reroll.
+     * @param {Object} originalNotation - The parsed notation for this phase.
+     * @returns {Object} A new parsed notation object (groups only, no constant).
+     */
+    function build_next_notation(explodedDice, rerolledDice, originalNotation) {
+        var allDice = explodedDice.concat(rerolledDice);
+        if (allDice.length === 0) return null;
+
+        var groupsMap = {};
+        for (var i = 0; i < allDice.length; i++) {
+            var die = allDice[i];
+            var gid = die.groupId;
+            if (!groupsMap[gid]) {
+                // Find the original group definition
+                var origGroup = null;
+                for (var j = 0; j < originalNotation.groups.length; j++) {
+                    if (originalNotation.groups[j].id === gid) {
+                        origGroup = originalNotation.groups[j];
+                        break;
+                    }
+                }
+                if (!origGroup) continue;
+                groupsMap[gid] = {
+                    id: Object.keys(groupsMap).length,
+                    count: 0,
+                    type: origGroup.type,
+                    rules: origGroup.rules.slice(), // copy rules
+                    isCompound: origGroup.isCompound,
+                    visual: origGroup.visual
+                };
+            }
+            groupsMap[gid].count++;
+        }
+
+        var newGroups = Object.values(groupsMap);
+        return {
+            groups: newGroups,
+            set: [], // will be filled later by generate_vectors
+            constant: 0,
+            error: false,
+            // also copy other fields if needed
+        };
+    }
+
+    /**
+     * Finds a group definition by id.
+     */
+    function findGroupById(notation, groupId) {
+        for (var i = 0; i < notation.groups.length; i++) {
+            if (notation.groups[i].id === groupId) return notation.groups[i];
+        }
+        return null;
+    }
+
+    /**
+     * Applies static rules (keep/drop, sort) to the combined results.
+     * This mutates the 'kept' flag and may reorder.
+     * Also logs events to audit.
+     */
+    function apply_static_rules(notation, combinedResults, audit, phase) {
+        // Group by groupId
+        var groups = {};
+        for (var i = 0; i < combinedResults.length; i++) {
+            var r = combinedResults[i];
+            if (!groups[r.groupId]) groups[r.groupId] = [];
+            groups[r.groupId].push(r);
+        }
+
+        for (var gid in groups) {
+            var groupDice = groups[gid];
+            var groupDef = findGroupById(notation, parseInt(gid, 10));
+            if (!groupDef) continue;
+
+            var rules = groupDef.rules || [];
+            // We only apply static rules here; dynamic ones (explode, reroll) are handled elsewhere.
+            for (var ri = 0; ri < rules.length; ri++) {
+                var rule = rules[ri];
+                var type = rule.type;
+                var count = rule.count || 0;
+
+                // Keep/Drop
+                if (type === 'keep-highest' || type === 'keep-lowest' ||
+                    type === 'drop-highest' || type === 'drop-lowest') {
+                    // Sort by value ascending, tie by diceId
+                    var sorted = groupDice.slice().sort(function(a, b) {
+                        if (a.value !== b.value) return a.value - b.value;
+                        return a.diceId - b.diceId;
+                    });
+
+                    // Mark all as not kept first? Actually we'll apply selectively
+                    // For keep rules, we start with all false, then set kept true for selected.
+                    // For drop rules, we start with all true, then set kept false for selected.
+                    var keepMode = (type === 'keep-highest' || type === 'keep-lowest');
+                    if (keepMode) {
+                        for (var d = 0; d < groupDice.length; d++) groupDice[d].kept = false;
+                        var numToKeep = Math.min(count, sorted.length);
+                        if (type === 'keep-highest') {
+                            for (var d = sorted.length - 1; d >= sorted.length - numToKeep; d--) {
+                                if (d >= 0) sorted[d].kept = true;
+                            }
+                        } else { // keep-lowest
+                            for (var d = 0; d < numToKeep; d++) {
+                                sorted[d].kept = true;
+                            }
+                        }
+                    } else { // drop
+                        // Initially all kept
+                        for (var d = 0; d < groupDice.length; d++) groupDice[d].kept = true;
+                        var numToDrop = Math.min(count, sorted.length);
+                        if (type === 'drop-highest') {
+                            for (var d = sorted.length - 1; d >= sorted.length - numToDrop; d--) {
+                                if (d >= 0) sorted[d].kept = false;
+                            }
+                        } else { // drop-lowest
+                            for (var d = 0; d < numToDrop; d++) {
+                                sorted[d].kept = false;
+                            }
+                        }
+                    }
+
+                    // Log the action
+                    var keptIds = groupDice.filter(d => d.kept).map(d => d.diceId);
+                    var droppedIds = groupDice.filter(d => !d.kept).map(d => d.diceId);
+                    var desc = '';
+                    if (keepMode) {
+                        desc = 'Kept ' + keptIds.length + ' die (IDs: ' + keptIds.join(', ') + ') with rule "' + type + '".';
+                    } else {
+                        desc = 'Dropped ' + droppedIds.length + ' die (IDs: ' + droppedIds.join(', ') + ') with rule "' + type + '".';
+                    }
+                    logEvent(audit, phase, type, desc, { rule: type, count: count, kept: keptIds, dropped: droppedIds });
+                }
+
+                // Sorting
+                if (type === 'sort-ascending') {
+                    groupDice.sort(function(a, b) {
+                        if (a.value !== b.value) return a.value - b.value;
+                        return a.diceId - b.diceId;
+                    });
+                    logEvent(audit, phase, 'sort', 'Sorted dice ascending.', { rule: 'sort-ascending' });
+                }
+                if (type === 'sort-descending') {
+                    groupDice.sort(function(a, b) {
+                        if (a.value !== b.value) return b.value - a.value;
+                        return a.diceId - b.diceId;
+                    });
+                    logEvent(audit, phase, 'sort', 'Sorted dice descending.', { rule: 'sort-descending' });
+                }
+
+                // Critical success/failure – just set flags on the die object (we'll handle final summarization)
+                if (type === 'critical-success') {
+                    for (var d = 0; d < groupDice.length; d++) {
+                        if (groupDice[d].value > rule.threshold) {
+                            groupDice[d].critical = true;
+                        }
+                    }
+                    logEvent(audit, phase, 'critical', 'Marked critical successes (>' + rule.threshold + ').', { rule: type, threshold: rule.threshold });
+                }
+                if (type === 'critical-failure') {
+                    for (var d = 0; d < groupDice.length; d++) {
+                        if (groupDice[d].value < rule.threshold) {
+                            groupDice[d].critical = true;
+                            groupDice[d].failure = true;
+                        }
+                    }
+                    logEvent(audit, phase, 'critical', 'Marked critical failures (<' + rule.threshold + ').', { rule: type, threshold: rule.threshold });
+                }
+
+                // Target number / failures – we'll apply at final result calculation
+                // We'll store the thresholds in the notation for later.
+                if (type === 'target-number') {
+                    notation._targetThreshold = rule.threshold;
+                    logEvent(audit, phase, 'target', 'Success count for values >= ' + rule.threshold + '.', { rule: type, threshold: rule.threshold });
+                }
+                if (type === 'failures') {
+                    notation._failureThreshold = rule.threshold;
+                    logEvent(audit, phase, 'failures', 'Failure count for values < ' + rule.threshold + '.', { rule: type, threshold: rule.threshold });
+                }
+            }
+        }
+    }
+
+    /**
+     * Runs a single physics phase for the given vectors and calls callback with raw results.
+     */
+    function _run_physics_phase(box, vectors, callback) {
+        box.prepare_dices_for_roll(vectors);
+
+        // Simulate until stopped
+        box.iteration = 0;
+        while (!box.check_if_throw_finished()) {
+            ++box.iteration;
+            box.world.step(vars.frame_rate);
+        }
+
+        var rawResults = get_dice_values(box.dices);
+        callback(rawResults);
+    }
+
+    /**
+     * Recursive roll processor
+     *
+     * @param {Object} box                     - dice_box instance
+     * @param {Object} parsedNotation          - notation for this phase
+     * @param {number} accumulatedTotal        - total from previous phases
+     * @param {number} depth                   - current recursion depth
+     * @param {number} maxDepth                - safety limit
+     * @param {Object} vector                  - throw direction (normalised)
+     * @param {number} boost                   - throw strength
+     * @param {Array}  forcedResults           - optional forced values for first phase (from before_roll)
+     * @param {Function} finalCallback         - called when entire roll is done
+     * @param {Array}  audit                   - shared audit array
+     * @param {Array}  keptAccum               - accumulated kept dice across phases
+     */
+    function _process_recursive_roll(
+        box,
+        parsedNotation,
+        accumulatedTotal,
+        depth,
+        maxDepth,
+        vector,
+        boost,
+        forcedResults,
+        finalCallback,
+        audit,
+        keptAccum
+    ) {
+        if (depth > maxDepth) {
+            var err = createDiceError('RECURSION_DEPTH_EXCEEDED', 'Max recursion depth reached (' + maxDepth + ').');
+            parsedNotation.error = true;
+            parsedNotation.errorCode = err.code;
+            parsedNotation.errorMessage = err.userMessage;
+            parsedNotation.errorStack = err.stack;
+            finalCallback(parsedNotation);
+            return;
+        }
+
+        // Check total dice limit
+        var totalDiceCount = 0;
+        for (var gi = 0; gi < parsedNotation.groups.length; gi++) {
+            totalDiceCount += parsedNotation.groups[gi].count;
+        }
+        if (keptAccum.length + totalDiceCount > vars.max_dice_per_roll) {
+            var err = createDiceError('TOO_MANY_DICE', 'Exceeded safety limit of ' + vars.max_dice_per_roll + ' dice.');
+            parsedNotation.error = true;
+            parsedNotation.errorCode = err.code;
+            parsedNotation.errorMessage = err.userMessage;
+            parsedNotation.errorStack = err.stack;
+            finalCallback(parsedNotation);
+            return;
+        }
+
+        // Generate vectors for this phase
+        var vectors = box.generate_vectors(parsedNotation, vector, boost);
+
+        // We need to pass the forced results only for the first phase (depth === 0)
+        var phaseForced = (depth === 0) ? forcedResults : null;
+
+        // Use box.roll to animate this phase
+        box.roll(vectors, phaseForced, function(rawResults) {
+
+            // Combine compound dice
+            var combined = combine_compound_results(rawResults, box.dices);
+
+            // Log roll event
+            var vals = combined.map(d => d.value).join(', ');
+            logEvent(audit, depth, 'roll', 'Rolled ' + combined.length + ' dice: ' + vals + '.', { dice: combined.map(d => ({id: d.diceId, value: d.value})) });
+
+            // Apply static rules (keep/drop, sort, criticals)
+            apply_static_rules(parsedNotation, combined, audit, depth);
+            apply_dropped_visuals_to_compound(combined, box.dices);
+            box.renderer.render(box.scene, box.camera);   
+            
+            // Process dynamic rules (explode, reroll) – these may generate new dice
+            var phaseTotal = 0;
+            var explodedDice = [];
+            var rerolledDice = [];
+
+            for (var i = 0; i < combined.length; i++) {
+                var die = combined[i];
+                if (!die.kept) continue;
+
+                phaseTotal += die.value;
+
+                var groupDef = findGroupById(parsedNotation, die.groupId);
+                if (!groupDef) continue;
+
+                for (var ri = 0; ri < groupDef.rules.length; ri++) {
+                    var rule = groupDef.rules[ri];
+
+                    // Explosion
+                    if (rule.type === 'explode' || rule.type === 'explode-compounding') {
+                        var maxVal = die_max_value(die.type);
+                        var explodeCondition = false;
+                        if (rule.threshold === 'max') {
+                            if (die.value === maxVal) explodeCondition = true;
+                        } else if (rule.condition === 'greater-than') {
+                            if (die.value > rule.threshold) explodeCondition = true;
+                        }
+                        if (explodeCondition) {
+                            explodedDice.push(die);
+                            logEvent(audit, depth, 'explode', 'Die #' + die.diceId + ' (value ' + die.value + ') exploded.', { diceId: die.diceId, value: die.value, rule: rule.type });
+                        }
+                    }
+
+                    // Reroll
+                    if (rule.type === 'reroll') {
+                        var shouldReroll = false;
+                        if (rule.condition === 'less-than') {
+                            if (die.value < rule.threshold) shouldReroll = true;
+                        } else if (rule.condition === 'greater-than') {
+                            if (die.value > rule.threshold) shouldReroll = true;
+                        }
+                        if (shouldReroll) {
+                            die.kept = false;
+                            phaseTotal -= die.value;
+                            rerolledDice.push(die);
+                            logEvent(audit, depth, 'reroll', 'Die #' + die.diceId + ' (value ' + die.value + ') will be rerolled.', { diceId: die.diceId, value: die.value, rule: rule.type });
+                        }
+                    }
+
+                    // Penetrate
+                    if (rule.type === 'penetrate') {
+                        if (die.value >= 10) {
+                            die._penetrate = true;
+                            explodedDice.push(die);
+                            logEvent(audit, depth, 'penetrate', 'Die #' + die.diceId + ' (value ' + die.value + ') penetrated.', { diceId: die.diceId, value: die.value });
+                        }
+                    }
+                }
+            }
+
+            // Accumulate kept dice
+            var keptThisPhase = combined.filter(d => d.kept);
+            keptAccum.push.apply(keptAccum, keptThisPhase);
+
+            // Build next notation
+            var nextNotation = build_next_notation(explodedDice, rerolledDice, parsedNotation);
+
+            if (!nextNotation || nextNotation.groups.length === 0) {
+                // No more dice – finalise
+                _finalise_roll(box, parsedNotation, accumulatedTotal + phaseTotal, finalCallback, keptAccum, audit);
+            } else {
+                // Recurse – note: we do NOT call box.clear() because box.roll will clear on next call
+                var newTotal = accumulatedTotal + phaseTotal;
+                _process_recursive_roll(
+                    box,
+                    nextNotation,
+                    newTotal,
+                    depth + 1,
+                    maxDepth,
+                    vector,
+                    boost,
+                    null,               // no forced results for subsequent phases
+                    finalCallback,
+                    audit,
+                    keptAccum
+                );
+            }
+        });
+    }
+
+    /**
+     * Finalises the roll and calls the after_roll callback.
+     */
+    function _finalise_roll(box, lastNotation, finalTotal, afterRollCb, keptAccum, audit) {
+        // Determine result type based on rules
+        var targetThreshold = lastNotation._targetThreshold;
+        var failureThreshold = lastNotation._failureThreshold;
+
+        var finalValue = finalTotal;
+        var successCount = 0;
+        var failureCount = 0;
+
+        if (targetThreshold !== undefined) {
+            // Count kept dice with value >= threshold
+            for (var i = 0; i < keptAccum.length; i++) {
+                if (keptAccum[i].value >= targetThreshold) successCount++;
+            }
+            finalValue = successCount;
+        } else if (failureThreshold !== undefined) {
+            for (var i = 0; i < keptAccum.length; i++) {
+                if (keptAccum[i].value < failureThreshold) failureCount++;
+            }
+            finalValue = failureCount;
+        } else {
+            // Sum of kept dice
+            // finalTotal already includes all kept dice from all phases
+            finalValue = finalTotal;
+        }
+
+        // Build result string
+        var values = keptAccum.map(d => d.value);
+        var resultString = values.join(' ');
+        if (lastNotation.constant) {
+            if (lastNotation.constant > 0) resultString += ' +' + lastNotation.constant;
+            else resultString += ' -' + Math.abs(lastNotation.constant);
+        }
+        if (values.length > 1 || lastNotation.constant) {
+            resultString += ' = ' + finalValue;
+        }
+
+        var notation = {
+            groups: lastNotation.groups,
+            set: lastNotation.set,
+            constant: lastNotation.constant || 0,
+            result: keptAccum.map(d => d.value),
+            diceResults: keptAccum,
+            resultTotal: finalValue,
+            resultString: resultString,
+            audit: audit,
+            auditString: that.formatAudit(audit),
+            error: false
+        };
+        console.log('Dice Roll: Final result:', notation.resultString, 'Total:', notation.resultTotal);
+        console.table(notation);
+        box.rolling = false;
+        if (afterRollCb) afterRollCb(notation);
+    }
+
+    // ---------------------------------------------------------------------
+    // MAIN THROW FUNCTION (modified to branch)
+    // ---------------------------------------------------------------------
+
     function throw_dices(
         box,
         vector,
@@ -1062,97 +1926,50 @@ var DICE = (function() {
 
         var uat = vars.use_adaptive_timestep;
 
-
-        /*
-         * Convert the throw vector into a direction.
-         */
+        // Normalise vector
         vector.x /= dist;
         vector.y /= dist;
 
-
-        /*
-         * Parse the original notation once for this throw.
-         */
-        var notation = that.parse_notation(
-            box.diceToRoll
-        );
-
+        // Parse notation
+        var notation = that.parse_notation(box.diceToRoll);
         console.log('Dice Roll: Parsed notation:', notation);
 
-        // Check for parse errors
         if (notation.error) {
-            console.warn('Dice Roll: Parsing failed – aborting roll.', notation.errorMessage);
-            if (after_roll) {
-                after_roll(notation);
-            }
+            if (after_roll) after_roll(notation);
             return;
         }
 
-        /*
-         * No physical dice means there is nothing to animate.
-         */
         if (notation.set.length == 0) {
             notation.error = true;
             notation.errorCode = 'NO_DICE';
             notation.errorMessage = DICE_ERRORS.NO_DICE;
-            console.warn('Dice Roll: No dice to roll, aborting.');
-            if (after_roll) {
-                after_roll(notation);
-            }
+            if (after_roll) after_roll(notation);
             return;
         }
 
-
-        /*
-         * Create one physical vector for every die.
-         *
-         * generate_vectors() expands the logical groups into individual
-         * physical dice while retaining group metadata.
-         * For compound d100 groups, it generates TWO physical vectors per die.
-         */
-        try {
-            var vectors = box.generate_vectors(
-                notation,
-                vector,
-                boost
-            );
-        } catch (e) {
-            var err = createDiceError('VECTOR_GENERATION_FAILED', null, e);
-            notation.error = true;
-            notation.errorCode = err.code;
-            notation.errorMessage = err.userMessage;
-            notation.errorStack = err.stack;
-            console.warn('Dice Roll: Failed to generate vectors.', err);
-            if (after_roll) {
-                after_roll(notation);
+        // Check if any group has dynamic rules (explode, reroll, etc.)
+        var hasDynamic = false;
+        for (var gi = 0; gi < notation.groups.length; gi++) {
+            var rules = notation.groups[gi].rules || [];
+            for (var ri = 0; ri < rules.length; ri++) {
+                var type = rules[ri].type;
+                if (type === 'explode' || type === 'explode-compounding' || type === 'reroll' || type === 'penetrate') {
+                    hasDynamic = true;
+                    break;
+                }
             }
-            return;
+            if (hasDynamic) break;
         }
-        console.log('Dice Roll: Generated ' + vectors.length + ' physical dice.');
-
 
         box.rolling = true;
 
-
-        let request_results = null;
-
-
-        /*
-         * Allow the application to provide authoritative numeric results.
-         *
-         * IMPORTANT:
-         *
-         * request_results is deliberately an array of numbers.
-         * It is not notation.diceResults.
-         *
-         * This allows roll() to shift the visual faces to the requested
-         * results while still letting the physical dice animate normally.
-         */
+        // Handle before_roll callback (only for first phase)
+        var request_results = null;
         if (before_roll) {
             try {
                 request_results = before_roll(notation);
                 if (request_results && request_results.length) {
-                    console.log('Dice Roll: Forced results provided:', request_results);
+                    console.log('Dice Roll: Forced results provided for first phase:', request_results);
                 }
             } catch (e) {
                 var err = createDiceError('CALLBACK_ERROR', 'Error in before_roll callback', e);
@@ -1160,148 +1977,98 @@ var DICE = (function() {
                 notation.errorCode = err.code;
                 notation.errorMessage = err.userMessage;
                 notation.errorStack = err.stack;
-                if (after_roll) {
-                    after_roll(notation);
-                }
+                if (after_roll) after_roll(notation);
+                console.log('Dice Roll: Final result:', notation.resultString, 'Total:', notation.resultTotal);
+                console.table(notation);
+                box.rolling = false;
+                vars.use_adaptive_timestep = uat;
                 return;
             }
         }
 
+        if (hasDynamic) {
+            // Use recursive pipeline
+            var audit = [];
+            var keptAccum = [];
+            var maxDepth = vars.max_recursion_depth;
 
-        roll(request_results);
+            // We need to generate vectors for the first phase normally
+            // But we also need to handle forced results if any.
+            // We'll pass them into the first _run_physics_phase? Actually forced results are applied after physics.
+            // We'll handle forced results by overriding faces after physics.
+            // So we'll run physics, then if forced results exist, shift faces.
 
-
-        /**
-         * Performs the visual roll.
-         *
-         * @param {number[]} request_results
-         *        Optional authoritative numeric results.
-         */
-        function roll(request_results) {
-
+            // We'll call _process_recursive_roll with the initial notation
+            _process_recursive_roll(
+                box,
+                notation,
+                0,          // accumulated total starts at 0
+                0,
+                maxDepth,
+                vector,
+                boost,
+                before_roll, // not used inside recursion
+                after_roll,
+                audit,
+                keptAccum
+            );
+        } else {
+            // Use original simple path (for backward compatibility and performance)
             try {
-                box.clear();
+                var vectors = box.generate_vectors(notation, vector, boost);
+                // If forced results, we need to emulate throw and shift faces
+                // But we can just call box.roll which handles that.
+                box.roll(vectors, request_results || notation.result, function(rawDiceResults) {
+                    // Now evaluate keep/drop on combined results (no recursion)
+                    var combined = combine_compound_results(rawDiceResults, box.dices);
+                    // Apply keep/drop
+                    apply_static_rules(notation, combined, [], 0); // audit not needed for simple
+                    apply_dropped_visuals_to_compound(combined, box.dices);
+                    box.renderer.render(box.scene, box.camera);   
+
+                    // Build final notation
+                    var kept = combined.filter(d => d.kept);
+                    var resultTotal = 0;
+                    for (var i = 0; i < kept.length; i++) resultTotal += kept[i].value;
+                    resultTotal += notation.constant || 0;
+                    var resultString = kept.map(d => d.value).join(' ');
+                    if (notation.constant) {
+                        if (notation.constant > 0) resultString += ' +' + notation.constant;
+                        else resultString += ' -' + Math.abs(notation.constant);
+                    }
+                    if (kept.length > 1 || notation.constant) {
+                        resultString += ' = ' + resultTotal;
+                    }
+                    notation.result = kept.map(d => d.value);
+                    notation.diceResults = combined;
+                    notation.resultTotal = resultTotal;
+                    notation.resultString = resultString;
+                    notation.audit = [];
+                    notation.auditString = '';
+                    if (after_roll) after_roll(notation);
+                    console.log('Dice Roll: Final result:', notation.resultString, 'Total:', notation.resultTotal);
+                    console.table(notation);
+                    box.rolling = false;
+                    vars.use_adaptive_timestep = uat;
+                });
             } catch (e) {
-                var err = createDiceError('RENDER_FAILED', 'Failed to clear dice from scene', e);
+                var err = createDiceError('RENDER_FAILED', null, e);
                 notation.error = true;
                 notation.errorCode = err.code;
                 notation.errorMessage = err.userMessage;
                 notation.errorStack = err.stack;
-                if (after_roll) {
-                    after_roll(notation);
-                }
-                return;
+                if (after_roll) after_roll(notation);
+                console.log('Dice Roll: Final result:', notation.resultString, 'Total:', notation.resultTotal);
+                console.table(notation);
+                box.rolling = false;
+                vars.use_adaptive_timestep = uat;
             }
-
-
-            box.roll(
-                vectors,
-
-                /*
-                 * If the caller did not provide results, notation.result
-                 * contains the numeric results from the parsed notation.
-                 *
-                 * During a normal roll this is empty, so the dice are
-                 * physically rolled.
-                 */
-                request_results || notation.result,
-
-
-                function(rawDiceResults) {
-
-                    console.log('Dice Roll: Physics finished, raw face values:', rawDiceResults);
-
-                    try {
-
-                        /*
-                         * STEP 1: Combine compound dice (e.g., d100 = tens + units)
-                         * This produces a new array where each entry represents one
-                         * logical die (with a combined value). The original raw
-                         * sub-results are stored for later visual handling.
-                         */
-                        var combinedResults = combine_compound_results(rawDiceResults, box.dices);
-
-                        console.log('Dice Roll: Combined results:', combinedResults);
-
-                        /*
-                         * STEP 2: Evaluate keep/drop rules on the combined results.
-                         * This sets the 'kept' flag on each combined entry.
-                         */
-                        var evaluatedCombined = evaluate_results_on_combined(notation, combinedResults);
-
-                        console.log('Dice Roll: After rules (kept flags):', evaluatedCombined);
-
-                        /*
-                         * STEP 3: Apply dropped visuals to both physical dice of each dropped compound.
-                         * This greys out all sub-dice of any dropped compound.
-                         */
-                        apply_dropped_visuals_to_compound(evaluatedCombined, box.dices);
-
-                        // Force a render to show the updated dropped dice visuals
-                        box.renderer.render(box.scene, box.camera);
-
-                        /*
-                         * STEP 4: Build the final notation object.
-                         * We need to produce notation.diceResults as an array of rich result objects
-                         * for each logical die (combined), and notation.result as kept values.
-                         */
-                        notation.diceResults = evaluatedCombined;   // each entry is a combined die result
-
-                        // Build the backwards-compatible numeric array of kept values
-                        notation.result = [];
-                        for (var i = 0; i < notation.diceResults.length; i++) {
-                            if (notation.diceResults[i].kept) {
-                                notation.result.push(notation.diceResults[i].value);
-                            }
-                        }
-
-                        // Calculate total (kept values + constant)
-                        notation.resultTotal = calculate_result(notation.diceResults, notation.constant);
-
-                        // Build the result string (same as before)
-                        var values = [];
-                        for (var i = 0; i < notation.result.length; i++) {
-                            values.push(notation.result[i]);
-                        }
-                        var res = values.join(' ');
-                        if (notation.constant) {
-                            if (notation.constant > 0) {
-                                res += ' +' + notation.constant;
-                            } else {
-                                res += ' -' + Math.abs(notation.constant);
-                            }
-                        }
-                        if (values.length > 1 || notation.constant) {
-                            res += ' = ' + notation.resultTotal;
-                        }
-                        notation.resultString = res;
-
-                        console.log('Dice Roll: Final result string:', res);
-                        console.log('Dice Roll: Detailed dice results:', notation.diceResults);
-
-                        if (after_roll) {
-                            after_roll(notation);
-                        }
-
-                        box.rolling = false;
-                        vars.use_adaptive_timestep = uat;
-                    } catch (e) {
-                        var err = createDiceError('RENDER_FAILED', 'Error during result evaluation or rendering', e);
-                        notation.error = true;
-                        notation.errorCode = err.code;
-                        notation.errorMessage = err.userMessage;
-                        notation.errorStack = err.stack;
-                        if (after_roll) {
-                            after_roll(notation);
-                        }
-                        box.rolling = false;
-                        vars.use_adaptive_timestep = uat;
-                    }
-                }
-            );
         }
     }
 
+    // ---------------------------------------------------------------------
+    // ORIGINAL DICE METHODS (unchanged, kept for compatibility)
+    // ---------------------------------------------------------------------
 
     /**
      * Generates the initial physical state for every die in a notation.
@@ -1349,7 +2116,6 @@ var DICE = (function() {
 
         var dieId = 0;
         var compoundIdCounter = 0;
-
 
         /*
         * Expand every logical group into physical dice.
@@ -1458,7 +2224,6 @@ var DICE = (function() {
 
         return vectors;
     };
-
 
     /**
      * Creates a Three.js mesh and Cannon.js rigid body for one physical die.
@@ -1582,13 +2347,11 @@ var DICE = (function() {
                 this.dice_body_material
             );
 
-
         dice.body.position.set(
             pos.x,
             pos.y,
             pos.z
         );
-
 
         dice.body.quaternion.setFromAxisAngle(
             new CANNON.Vec3(
@@ -1599,13 +2362,11 @@ var DICE = (function() {
             axis.a * Math.PI * 2
         );
 
-
         dice.body.angularVelocity.set(
             angle.x,
             angle.y,
             angle.z
         );
-
 
         dice.body.velocity.set(
             velocity.x,
@@ -1613,16 +2374,13 @@ var DICE = (function() {
             velocity.z
         );
 
-
         dice.body.linearDamping = 0.1;
         dice.body.angularDamping = 0.1;
-
 
         this.scene.add(dice);
         this.dices.push(dice);
         this.world.add(dice.body);
     };
-
 
     /**
      * Determines whether all physical dice have stopped moving.
@@ -1633,7 +2391,6 @@ var DICE = (function() {
 
         var res = true;
         var e = 6;
-
 
         if (
             this.iteration <
@@ -1648,17 +2405,14 @@ var DICE = (function() {
 
                 var dice = this.dices[i];
 
-
                 if (
                     dice.dice_stopped === true
                 ) {
                     continue;
                 }
 
-
                 var a = dice.body.angularVelocity;
                 var v = dice.body.velocity;
-
 
                 if (
                     Math.abs(a.x) < e &&
@@ -1687,7 +2441,6 @@ var DICE = (function() {
                             this.iteration;
                     }
 
-
                     res = false;
                 }
                 else {
@@ -1700,10 +2453,8 @@ var DICE = (function() {
             }
         }
 
-
         return res;
     };
-
 
     /**
      * Runs the physics simulation synchronously until the dice stop.
@@ -1728,12 +2479,10 @@ var DICE = (function() {
             );
         }
 
-
         return get_dice_values(
             this.dices
         );
     };
-
 
     /**
      * Animates the physics simulation.
@@ -1744,19 +2493,15 @@ var DICE = (function() {
 
         var time = (new Date()).getTime();
 
-
         var time_diff =
             (time - this.last_time) /
             1000;
-
 
         if (time_diff > 3) {
             time_diff = vars.frame_rate;
         }
 
-
         ++this.iteration;
-
 
         if (vars.use_adaptive_timestep) {
 
@@ -1773,7 +2518,6 @@ var DICE = (function() {
                     vars.frame_rate;
             }
 
-
             this.world.step(
                 time_diff
             );
@@ -1785,7 +2529,6 @@ var DICE = (function() {
             );
         }
 
-
         /*
          * Synchronise Three.js meshes with their Cannon.js bodies.
          */
@@ -1795,7 +2538,6 @@ var DICE = (function() {
 
             var interact =
                 this.scene.children[i];
-
 
             if (
                 interact.body != undefined
@@ -1811,18 +2553,15 @@ var DICE = (function() {
             }
         }
 
-
         this.renderer.render(
             this.scene,
             this.camera
         );
 
-
         this.last_time =
             this.last_time
                 ? time
                 : (new Date()).getTime();
-
 
         if (
             this.running == threadid &&
@@ -1830,7 +2569,6 @@ var DICE = (function() {
         ) {
 
             this.running = false;
-
 
             if (this.callback) {
 
@@ -1842,7 +2580,6 @@ var DICE = (function() {
                 );
             }
         }
-
 
         if (
             this.running == threadid
@@ -1892,7 +2629,6 @@ var DICE = (function() {
         }
     };
 
-
     /**
      * Removes all current physical dice from the scene and physics world.
      */
@@ -1900,16 +2636,13 @@ var DICE = (function() {
 
         this.running = false;
 
-
         var dice;
-
 
         while (
             dice = this.dices.pop()
         ) {
 
             this.scene.remove(dice);
-
 
             if (dice.body) {
                 this.world.remove(
@@ -1918,22 +2651,18 @@ var DICE = (function() {
             }
         }
 
-
         if (this.pane) {
             this.scene.remove(
                 this.pane
             );
         }
 
-
         this.renderer.render(
             this.scene,
             this.camera
         );
 
-
         var box = this;
-
 
         setTimeout(
             function() {
@@ -1948,7 +2677,6 @@ var DICE = (function() {
         );
     };
 
-
     /**
      * Creates the physical dice represented by the supplied vectors.
      *
@@ -1962,7 +2690,6 @@ var DICE = (function() {
 
         this.iteration = 0;
 
-
         for (
             var i = 0;
             i < vectors.length;
@@ -1971,7 +2698,6 @@ var DICE = (function() {
 
             var vector =
                 vectors[i];
-
 
             this.create_dice(
                 vector.set,
@@ -1987,7 +2713,6 @@ var DICE = (function() {
             );
         }
     };
-
 
     /**
      * Rolls a set of physical dice.
@@ -2010,7 +2735,6 @@ var DICE = (function() {
             vectors
         );
 
-
         if (
             values != undefined &&
             values.length
@@ -2023,10 +2747,8 @@ var DICE = (function() {
              */
             vars.use_adaptive_timestep = false;
 
-
             var res =
                 this.emulate_throw();
-
 
             /*
              * Recreate the original throw state before the visible faces are
@@ -2035,7 +2757,6 @@ var DICE = (function() {
             this.prepare_dices_for_roll(
                 vectors
             );
-
 
             // For compound dice, we need to split the forced value into tens and units.
             // Build a map of physical die ID to its compoundId and role.
@@ -2116,7 +2837,6 @@ var DICE = (function() {
             }
         }
 
-
         this.callback = callback;
 
         this.running =
@@ -2124,12 +2844,10 @@ var DICE = (function() {
 
         this.last_time = 0;
 
-
         this.__animate(
             this.running
         );
     };
-
 
     /**
      * Searches for a rendered die under the mouse position.
@@ -2144,7 +2862,6 @@ var DICE = (function() {
 
         var m =
             $t.get_mouse_coords(ev);
-
 
         var intersects =
             new THREE.Raycaster(
@@ -2168,7 +2885,6 @@ var DICE = (function() {
             .intersectObjects(
                 this.dices
             );
-
 
         if (intersects.length) {
             return intersects[0]
@@ -2349,6 +3065,12 @@ var DICE = (function() {
             case 'd100_compound':
                 vars.d100_compound = value;
                 break;
+            case 'max_recursion_depth':
+                vars.max_recursion_depth = value;
+                break;
+            case 'max_dice_per_roll':
+                vars.max_dice_per_roll = value;
+                break;
             default:
                 throw new Error(`Unhandled parameter "${name}"`);
         }
@@ -2431,707 +3153,8 @@ var DICE = (function() {
     };
 
     // ---------------------------------------------------------------------
-    // NOTATION
-    // ---------------------------------------------------------------------
-
-
-    /**
-     * Parses a dice notation string.
-     *
-     * Supported examples:
-     *
-     *     1d20
-     *     d20
-     *     3d6
-     *     3d6 + 1d20 + 1d10
-     *     2d20kh1
-     *     2d20kl1
-     *     4d6dl1
-     *     4d6dh1
-     *     3d6 + 5
-     *
-     * Supported rules:
-     *
-     *     kh = keep highest
-     *     kl = keep lowest
-     *     dh = drop highest
-     *     dl = drop lowest
-     *
-     * The parser deliberately produces structured rules rather than retaining
-     * shorthand strings. This means later rules such as rerolls, exploding
-     * dice or Lucky-style mechanics can be represented without changing the
-     * physics layer.
-     *
-     * Example group:
-     *
-     *     {
-     *         id: 0,
-     *         count: 4,
-     *         type: 'd6',
-     *         rule: {
-     *             type: 'drop-lowest',
-     *             count: 1
-     *         },
-     *         visual: null,
-     *         isCompound: false
-     *     }
-     *
-     * Limits:
-     *   - Maximum 10 groups per roll.
-     *   - Maximum 10 dice per group.
-     *
-     * @param {string} notation
-     * @returns {Object}
-     */
-    that.parse_notation = function(notation) {
-
-        var ret = {
-            groups: [],
-
-            /*
-             * Flattened physical die list retained for backwards
-             * compatibility with the original implementation.
-             */
-            set: [],
-
-            constant: 0,
-
-            /*
-             * Numeric kept results. This remains the compatibility-facing
-             * result property.
-             */
-            result: [],
-
-            /*
-             * Rich result objects for every physical die.
-             */
-            diceResults: [],
-
-            resultTotal: 0,
-            resultString: '',
-            error: false,
-            errorCode: null,
-            errorMessage: null,
-            errorStack: null
-        };
-
-
-        /*
-         * Only the standard RPG dice currently supported by the parser.
-         *
-         * d9 remains a known geometry for compatibility, but is not exposed
-         * through this notation grammar yet.
-         */
-        var supportedDice = [
-            'd4',
-            'd6',
-            'd8',
-            'd9',
-            'd10',
-            'd12',
-            'd20',
-            'd100'
-        ];
-
-
-        /*
-         * A missing notation is treated as invalid rather than throwing.
-         */
-        if (
-            typeof notation !== 'string' ||
-            notation.trim().length === 0
-        ) {
-
-            ret.error = true;
-            ret.errorCode = 'EMPTY_NOTATION';
-            ret.errorMessage = DICE_ERRORS.EMPTY_NOTATION;
-            console.warn('Dice Roll: Empty or invalid notation string.');
-            return ret;
-        }
-
-
-        /*
-         * The old parser allowed an '@' suffix for externally supplied
-         * results. That behaviour is retained by simply parsing the notation
-         * portion before '@'.
-         *
-         * Result injection itself is handled by before_roll.
-         */
-        var source =
-            notation
-                .split('@')[0]
-                .replace(/\s+/g, '');
-
-
-        if (source.length === 0) {
-            ret.error = true;
-            ret.errorCode = 'EMPTY_NOTATION';
-            ret.errorMessage = DICE_ERRORS.EMPTY_NOTATION;
-            console.warn('Dice Roll: Notation contains only whitespace after removing @.');
-            return ret;
-        }
-
-
-        /*
-         * Split the expression into signed terms.
-         *
-         * "3d6+1d20-2+4d8"
-         *
-         * becomes:
-         *
-         *   3d6
-         *   +1d20
-         *   -2
-         *   +4d8
-         *
-         * A leading '+' or '-' is permitted.
-         */
-        var terms =
-            source.split(/(?=[+-])/);
-
-
-        for (
-            var termIndex = 0;
-            termIndex < terms.length;
-            termIndex++
-        ) {
-
-            var term =
-                terms[termIndex];
-
-
-            if (!term) {
-                ret.error = true;
-                ret.errorCode = 'INVALID_NOTATION';
-                ret.errorMessage = DICE_ERRORS.INVALID_NOTATION;
-                continue;
-            }
-
-
-            /*
-             * Extract the sign.
-             */
-            var sign = 1;
-
-
-            if (term.charAt(0) === '+') {
-
-                term = term.substring(1);
-            }
-            else if (term.charAt(0) === '-') {
-
-                sign = -1;
-                term = term.substring(1);
-            }
-
-
-            if (!term) {
-                ret.error = true;
-                ret.errorCode = 'INVALID_NOTATION';
-                ret.errorMessage = DICE_ERRORS.INVALID_NOTATION;
-                continue;
-            }
-
-
-            /*
-             * Dice term.
-             *
-             * count:
-             *     Optional number of dice. Defaults to one.
-             *
-             * sides:
-             *     d4, d6, d8, d10, d12, d20 or d100.
-             *
-             * rule:
-             *     Optional kh, kl, dh or dl.
-             *
-             * ruleCount:
-             *     Required when a rule is supplied.
-             */
-            var diceMatch =
-                term.match(
-                    /^(\d*)d(\d+)(kh|kl|dh|dl)?(\d+)?$/i
-                );
-
-
-            if (diceMatch) {
-
-                /*
-                 * Dice terms may not be negative.
-                 */
-                if (sign < 0) {
-                    ret.error = true;
-                    ret.errorCode = 'NEGATIVE_DICE_TERM';
-                    ret.errorMessage = DICE_ERRORS.NEGATIVE_DICE_TERM + ' (' + term + ')';
-                    console.warn('Dice Roll: Negative dice term not allowed:', term);
-                    continue;
-                }
-
-
-                var count =
-                    diceMatch[1] === ''
-                        ? 1
-                        : parseInt(
-                            diceMatch[1],
-                            10
-                        );
-
-
-                var type =
-                    'd' +
-                    diceMatch[2];
-
-
-                var ruleCode =
-                    diceMatch[3]
-                        ? diceMatch[3].toLowerCase()
-                        : null;
-
-
-                var ruleCount =
-                    diceMatch[4]
-                        ? parseInt(
-                            diceMatch[4],
-                            10
-                        )
-                        : null;
-
-
-                /*
-                 * Reject zero dice.
-                 */
-                if (count <= 0) {
-                    ret.error = true;
-                    ret.errorCode = 'ZERO_DICE';
-                    ret.errorMessage = DICE_ERRORS.ZERO_DICE;
-                    console.warn('Dice Roll: Dice count must be > 0.');
-                    continue;
-                }
-
-                /*
-                 * Limit: maximum 10 dice per group.
-                 */
-                if (count > 10) {
-                    ret.error = true;
-                    ret.errorCode = 'TOO_MANY_DICE_PER_GROUP';
-                    ret.errorMessage = DICE_ERRORS.TOO_MANY_DICE_PER_GROUP + ' (got ' + count + ')';
-                    console.warn('Dice Roll: Maximum 10 dice per group (got ' + count + ').');
-                    continue;
-                }
-
-
-                /*
-                 * Reject unsupported dice.
-                 */
-                if (
-                    supportedDice.indexOf(type) === -1
-                ) {
-
-                    ret.error = true;
-                    ret.errorCode = 'UNSUPPORTED_DIE';
-                    ret.errorMessage = DICE_ERRORS.UNSUPPORTED_DIE + ' (' + type + ')';
-                    console.warn('Dice Roll: Unsupported dice type:', type, 'in term:', term);
-                    continue;
-                }
-
-
-                /*
-                 * A rule requires a positive count.
-                 */
-                if (
-                    ruleCode &&
-                    (
-                        ruleCount === null ||
-                        ruleCount <= 0
-                    )
-                ) {
-
-                    ret.error = true;
-                    ret.errorCode = 'INVALID_RULE';
-                    ret.errorMessage = DICE_ERRORS.INVALID_RULE;
-                    console.warn('Dice Roll: Invalid rule count for', term);
-                    continue;
-                }
-
-
-                /*
-                 * A keep/drop count cannot exceed the number of dice in
-                 * the group.
-                 */
-                if (
-                    ruleCode &&
-                    ruleCount > count
-                ) {
-
-                    ret.error = true;
-                    ret.errorCode = 'RULE_COUNT_EXCEEDS_DICE';
-                    ret.errorMessage = DICE_ERRORS.RULE_COUNT_EXCEEDS_DICE + ' (' + ruleCount + ' > ' + count + ')';
-                    console.warn('Dice Roll: Rule count (' + ruleCount + ') exceeds dice count (' + count + ').');
-                    continue;
-                }
-
-
-                var rule = null;
-
-
-                switch (ruleCode) {
-
-                    case 'kh':
-
-                        rule = {
-                            type: 'keep-highest',
-                            count: ruleCount
-                        };
-
-                        break;
-
-
-                    case 'kl':
-
-                        rule = {
-                            type: 'keep-lowest',
-                            count: ruleCount
-                        };
-
-                        break;
-
-
-                    case 'dh':
-
-                        rule = {
-                            type: 'drop-highest',
-                            count: ruleCount
-                        };
-
-                        break;
-
-
-                    case 'dl':
-
-                        rule = {
-                            type: 'drop-lowest',
-                            count: ruleCount
-                        };
-
-                        break;
-                }
-
-
-                /*
-                 * Create a logical group.
-                 *
-                 * visual is intentionally data-only. It must not contain
-                 * Three.js materials because parsing should remain independent
-                 * from the renderer.
-                 */
-                var group = {
-                    id: ret.groups.length,
-                    count: count,
-                    type: type,
-                    rule: rule,
-
-                    /*
-                     * Reserved for future per-group presentation settings,
-                     * e.g.:
-                     *
-                     * {
-                     *     diceColour: '#3498db',
-                     *     labelColour: '#aaaaaa'
-                     * }
-                     */
-                    visual: null,
-                    isCompound: (type === 'd100' && vars.d100_compound)
-                };
-
-
-                ret.groups.push(group);
-
-                /*
-                 * Limit: maximum 10 groups.
-                 */
-                if (ret.groups.length > 10) {
-                    ret.error = true;
-                    ret.errorCode = 'TOO_MANY_GROUPS';
-                    ret.errorMessage = DICE_ERRORS.TOO_MANY_GROUPS + ' (got ' + ret.groups.length + ')';
-                    console.warn('Dice Roll: Maximum 10 groups allowed (got ' + ret.groups.length + ').');
-                    // Remove the last group to keep within limit
-                    ret.groups.pop();
-                    // Continue parsing but mark error.
-                }
-
-
-                /*
-                 * Maintain the flattened set used by the physical dice
-                 * generation code and by existing consumers.
-                 * For compound d100, we push TWO entries per die (tens and units).
-                 */
-                if (group.isCompound) {
-                    for (var i = 0; i < count; i++) {
-                        ret.set.push('d100');   // tens die
-                        ret.set.push('d10');    // units die
-                    }
-                } else {
-                    for (var i = 0; i < count; i++) {
-                        ret.set.push(type);
-                    }
-                }
-
-
-                continue;
-            }
-
-
-            /*
-             * Constant term.
-             *
-             * Examples:
-             *
-             *     +5
-             *     -2
-             *     5
-             */
-            var constantMatch =
-                term.match(
-                    /^\d+$/
-                );
-
-
-            if (constantMatch) {
-
-                ret.constant +=
-                    sign *
-                    parseInt(
-                        term,
-                        10
-                    );
-
-                continue;
-            }
-
-
-            /*
-             * Anything which reaches this point is invalid notation.
-             *
-             * We mark the whole parse as erroneous but continue processing
-             * so callers still receive a safe result object.
-             */
-            ret.error = true;
-            ret.errorCode = 'INVALID_NOTATION';
-            ret.errorMessage = DICE_ERRORS.INVALID_NOTATION + ' (unrecognised term "' + term + '")';
-            console.warn('Dice Roll: Unrecognised term:', term);
-        }
-
-
-        /*
-         * A valid notation must contain at least one physical die.
-         *
-         * A constant-only expression such as "5" is therefore not a valid
-         * dice roll.
-         */
-        if (ret.set.length === 0) {
-            ret.error = true;
-            ret.errorCode = 'NO_DICE';
-            ret.errorMessage = DICE_ERRORS.NO_DICE;
-            console.warn('Dice Roll: No dice in notation (constant-only expressions are not allowed).');
-        }
-
-
-        if (!ret.error) {
-            console.log('Dice Roll: Notation parsed successfully. Groups:', ret.groups.length, 'Physical dice:', ret.set.length);
-        } else {
-            console.warn('Dice Roll: Notation parse had errors. Results may be incomplete.');
-        }
-
-        return ret;
-    };
-
-
-    /**
-     * Converts a parsed notation object back into dice notation.
-     *
-     * Unlike the original implementation, this function serialises the
-     * logical groups rather than merely counting entries in the flattened
-     * "set" array.
-     *
-     * This is important because:
-     *
-     *     2d20kh1
-     *
-     * must remain:
-     *
-     *     2d20kh1
-     *
-     * rather than becoming:
-     *
-     *     2d20
-     *
-     * Groups are kept separate deliberately. Therefore:
-     *
-     *     2d20 + 2d20kh1
-     *
-     * remains two logical groups even though both groups contain d20s.
-     *
-     * @param {Object} nn
-     * @returns {string}
-     */
-    that.stringify_notation = function(nn) {
-
-        var notation = '';
-
-
-        /*
-         * Prefer structured groups.
-         *
-         * The fallback to nn.set keeps this helper compatible with notation
-         * objects produced by older versions of the library.
-         */
-        if (
-            nn &&
-            Array.isArray(nn.groups) &&
-            nn.groups.length
-        ) {
-
-            for (
-                var i = 0;
-                i < nn.groups.length;
-                i++
-            ) {
-
-                var group =
-                    nn.groups[i];
-
-
-                if (notation.length) {
-                    notation += ' + ';
-                }
-
-
-                /*
-                 * A single die is conventionally represented as "d20".
-                 */
-                if (group.count !== 1) {
-                    notation += group.count;
-                }
-
-
-                notation += group.type;
-
-
-                if (group.rule) {
-
-                    switch (group.rule.type) {
-
-                        case 'keep-highest':
-
-                            notation +=
-                                'kh' +
-                                group.rule.count;
-
-                            break;
-
-
-                        case 'keep-lowest':
-
-                            notation +=
-                                'kl' +
-                                group.rule.count;
-
-                            break;
-
-
-                        case 'drop-highest':
-
-                            notation +=
-                                'dh' +
-                                group.rule.count;
-
-                            break;
-
-
-                        case 'drop-lowest':
-
-                            notation +=
-                                'dl' +
-                                group.rule.count;
-
-                            break;
-                    }
-                }
-            }
-        }
-        else {
-
-            /*
-             * Legacy fallback.
-             */
-            var dict = {};
-
-
-            for (
-                var i = 0;
-                i < nn.set.length;
-                i++
-            ) {
-
-                if (!dict[nn.set[i]]) {
-                    dict[nn.set[i]] = 1;
-                }
-                else {
-                    ++dict[nn.set[i]];
-                }
-            }
-
-
-            for (var type in dict) {
-
-                if (notation.length) {
-                    notation += ' + ';
-                }
-
-
-                notation +=
-                    (
-                        dict[type] > 1
-                            ? dict[type]
-                            : ''
-                    ) +
-                    type;
-            }
-        }
-
-
-        /*
-         * Append the constant modifier.
-         */
-        if (nn.constant) {
-
-            if (notation.length) {
-
-                if (nn.constant > 0) {
-                    notation += ' + ' + nn.constant;
-                }
-                else {
-                    notation +=
-                        ' - ' +
-                        Math.abs(nn.constant);
-                }
-            }
-            else {
-
-                notation +=
-                    nn.constant;
-            }
-        }
-
-
-        return notation;
-    };
-
-
-    // ---------------------------------------------------------------------
     // PRIVATE DICE RESULT ENGINE (NEW)
     // ---------------------------------------------------------------------
-
 
     /**
      * Combines raw physical dice results into logical compound results.
@@ -3231,95 +3254,6 @@ var DICE = (function() {
         return combined;
     }
 
-
-    /**
-     * Evaluates keep/drop rules on the combined results.
-     *
-     * This is a modified version of the original evaluate_results that works
-     * on the combined array. It groups by groupId and applies the rules
-     * on the combined values.
-     *
-     * @param {Object} notation - The parsed notation object (contains groups).
-     * @param {Object[]} combinedResults - Array of combined logical dice results.
-     * @returns {Object[]} The same array with 'kept' flags set.
-     */
-    function evaluate_results_on_combined(notation, combinedResults) {
-        // Make a copy to avoid mutating the original? We'll mutate in place.
-        var results = combinedResults;
-
-        // Group by groupId
-        var groups = {};
-        for (var i = 0; i < results.length; i++) {
-            var r = results[i];
-            if (!groups[r.groupId]) {
-                groups[r.groupId] = [];
-            }
-            groups[r.groupId].push(r);
-        }
-
-        // For each group, find the rule and apply.
-        for (var gid in groups) {
-            var groupDice = groups[gid];
-            // Find the group definition from notation
-            var groupDef = null;
-            for (var j = 0; j < notation.groups.length; j++) {
-                if (notation.groups[j].id == gid) {
-                    groupDef = notation.groups[j];
-                    break;
-                }
-            }
-            if (!groupDef) continue;
-
-            // If no rule, keep all (already kept=true)
-            if (!groupDef.rule) continue;
-
-            // Sort by value (ascending), tie-break by diceId (deterministic)
-            var sorted = groupDice.slice().sort(function(a, b) {
-                if (a.value !== b.value) return a.value - b.value;
-                return a.diceId - b.diceId;
-            });
-
-            var rule = groupDef.rule;
-            var count = rule.count;
-
-            switch (rule.type) {
-                case 'keep-highest':
-                    // Drop all first, then keep highest N
-                    for (var i = 0; i < groupDice.length; i++) {
-                        groupDice[i].kept = false;
-                    }
-                    for (var i = sorted.length - 1; i >= 0 && i >= sorted.length - count; i--) {
-                        sorted[i].kept = true;
-                    }
-                    break;
-                case 'keep-lowest':
-                    for (var i = 0; i < groupDice.length; i++) {
-                        groupDice[i].kept = false;
-                    }
-                    for (var i = 0; i < sorted.length && i < count; i++) {
-                        sorted[i].kept = true;
-                    }
-                    break;
-                case 'drop-highest':
-                    // keep all then drop highest N
-                    for (var i = sorted.length - 1; i >= 0 && i >= sorted.length - count; i--) {
-                        sorted[i].kept = false;
-                    }
-                    break;
-                case 'drop-lowest':
-                    for (var i = 0; i < sorted.length && i < count; i++) {
-                        sorted[i].kept = false;
-                    }
-                    break;
-                default:
-                    break;
-            }
-        }
-
-        return results;
-    }
-
-
     /**
      * Applies dropped visuals to both physical dice of a dropped compound.
      *
@@ -3382,7 +3316,6 @@ var DICE = (function() {
         }
     }
 
-
     /**
      * Calculates the final numeric result.
      *
@@ -3400,7 +3333,6 @@ var DICE = (function() {
         var total =
             constant || 0;
 
-
         for (
             var i = 0;
             i < diceResults.length;
@@ -3416,21 +3348,17 @@ var DICE = (function() {
             }
         }
 
-
         return total;
     }
-
 
     // ---------------------------------------------------------------------
     // DICE GEOMETRIES / MATERIALS
     // ---------------------------------------------------------------------
 
-
     /**
      * Cache of generated dice geometry/materials.
      */
     let threeD_dice = {};
-
 
     /**
      * Returns the geometry for a given dice type, creating it if needed.
@@ -3481,7 +3409,6 @@ var DICE = (function() {
         }
     };
 
-
     /**
      * Creates a d4 mesh (kept for backward compatibility).
      *
@@ -3496,7 +3423,6 @@ var DICE = (function() {
                 );
         }
 
-
         if (!this.d4_material) {
 
             this.d4_material =
@@ -3509,13 +3435,11 @@ var DICE = (function() {
                 );
         }
 
-
         return new THREE.Mesh(
             this.d4_geometry,
             this.d4_material
         );
     };
-
 
     /**
      * Creates a d6 mesh (kept for backward compatibility).
@@ -3532,7 +3456,6 @@ var DICE = (function() {
                 );
         }
 
-
         if (!this.dice_material) {
 
             this.dice_material =
@@ -3545,13 +3468,11 @@ var DICE = (function() {
                 );
         }
 
-
         return new THREE.Mesh(
             this.d6_geometry,
             this.dice_material
         );
     };
-
 
     /**
      * Creates a d8 mesh (kept for backward compatibility).
@@ -3568,7 +3489,6 @@ var DICE = (function() {
                 );
         }
 
-
         if (!this.dice_material) {
 
             this.dice_material =
@@ -3581,13 +3501,11 @@ var DICE = (function() {
                 );
         }
 
-
         return new THREE.Mesh(
             this.d8_geometry,
             this.dice_material
         );
     };
-
 
     /**
      * Creates a d9 mesh (kept for backward compatibility).
@@ -3604,7 +3522,6 @@ var DICE = (function() {
                 );
         }
 
-
         if (!this.dice_material) {
 
             this.dice_material =
@@ -3617,13 +3534,11 @@ var DICE = (function() {
                 );
         }
 
-
         return new THREE.Mesh(
             this.d10_geometry,
             this.dice_material
         );
     };
-
 
     /**
      * Creates a d10 mesh (kept for backward compatibility).
@@ -3640,7 +3555,6 @@ var DICE = (function() {
                 );
         }
 
-
         if (!this.dice_material) {
 
             this.dice_material =
@@ -3653,13 +3567,11 @@ var DICE = (function() {
                 );
         }
 
-
         return new THREE.Mesh(
             this.d10_geometry,
             this.dice_material
         );
     };
-
 
     /**
      * Creates a d12 mesh (kept for backward compatibility).
@@ -3676,7 +3588,6 @@ var DICE = (function() {
                 );
         }
 
-
         if (!this.dice_material) {
 
             this.dice_material =
@@ -3689,13 +3600,11 @@ var DICE = (function() {
                 );
         }
 
-
         return new THREE.Mesh(
             this.d12_geometry,
             this.dice_material
         );
     };
-
 
     /**
      * Creates a d20 mesh (kept for backward compatibility).
@@ -3712,7 +3621,6 @@ var DICE = (function() {
                 );
         }
 
-
         if (!this.dice_material) {
 
             this.dice_material =
@@ -3725,13 +3633,11 @@ var DICE = (function() {
                 );
         }
 
-
         return new THREE.Mesh(
             this.d20_geometry,
             this.dice_material
         );
     };
-
 
     /**
      * Creates a d100 mesh (kept for backward compatibility).
@@ -3748,7 +3654,6 @@ var DICE = (function() {
                 );
         }
 
-
         if (!this.d100_material) {
 
             this.d100_material =
@@ -3761,13 +3666,11 @@ var DICE = (function() {
                 );
         }
 
-
         return new THREE.Mesh(
             this.d10_geometry,
             this.d100_material
         );
     };
-
 
     /**
      * Creates standard dice face materials.
@@ -3810,16 +3713,13 @@ var DICE = (function() {
                 return null;
             }
 
-
             var canvas =
                 document.createElement(
                     "canvas"
                 );
 
-
             var context =
                 canvas.getContext("2d");
-
 
             var ts =
                 calc_texture_size(
@@ -3827,21 +3727,17 @@ var DICE = (function() {
                     size * 2 * margin
                 ) * 2;
 
-
             canvas.width =
                 canvas.height =
                     ts;
-
 
             context.font =
                 ts /
                 (1 + 2 * margin) +
                 "pt Arial";
 
-
             context.fillStyle =
                 back_color;
-
 
             context.fillRect(
                 0,
@@ -3850,25 +3746,20 @@ var DICE = (function() {
                 canvas.height
             );
 
-
             context.textAlign =
                 "center";
-
 
             context.textBaseline =
                 "middle";
 
-
             context.fillStyle =
                 color;
-
 
             context.fillText(
                 text,
                 canvas.width / 2,
                 canvas.height / 2
             );
-
 
             /*
              * Add the conventional dot under 6/9 to make the distinction
@@ -3886,20 +3777,16 @@ var DICE = (function() {
                 );
             }
 
-
             var texture =
                 new THREE.Texture(
                     canvas
                 );
 
-
             texture.needsUpdate =
                 true;
 
-
             return texture;
         }
-
 
         var materials = [];
         var bg = colorToCSS(bodyColor);
@@ -3927,10 +3814,8 @@ var DICE = (function() {
             );
         }
 
-
         return materials;
     }
-
 
     /**
      * Creates d4-specific face materials.
@@ -3974,31 +3859,25 @@ var DICE = (function() {
                     "canvas"
                 );
 
-
             var context =
                 canvas.getContext("2d");
-
 
             var ts =
                 calc_texture_size(
                     size + margin
                 ) * 2;
 
-
             canvas.width =
                 canvas.height =
                     ts;
-
 
             context.font =
                 (ts - margin) *
                 0.5 +
                 "pt Arial";
 
-
             context.fillStyle =
                 back_color;
-
 
             context.fillRect(
                 0,
@@ -4007,18 +3886,14 @@ var DICE = (function() {
                 canvas.height
             );
 
-
             context.textAlign =
                 "center";
-
 
             context.textBaseline =
                 "middle";
 
-
             context.fillStyle =
                 color;
-
 
             for (var i in text) {
 
@@ -4029,17 +3904,14 @@ var DICE = (function() {
                         ts * 0.3
                 );
 
-
                 context.translate(
                     canvas.width / 2,
                     canvas.height / 2
                 );
 
-
                 context.rotate(
                     Math.PI * 2 / 3
                 );
-
 
                 context.translate(
                     -canvas.width / 2,
@@ -4047,20 +3919,16 @@ var DICE = (function() {
                 );
             }
 
-
             var texture =
                 new THREE.Texture(
                     canvas
                 );
 
-
             texture.needsUpdate =
                 true;
 
-
             return texture;
         }
-
 
         var materials = [];
         var bg = colorToCSS(bodyColor);
@@ -4088,10 +3956,8 @@ var DICE = (function() {
             );
         }
 
-
         return materials;
     }
-
 
     /**
      * Creates d4 geometry.
@@ -4108,14 +3974,12 @@ var DICE = (function() {
             [1, -1, -1]
         ];
 
-
         var faces = [
             [1, 0, 2, 1],
             [0, 1, 3, 2],
             [0, 3, 2, 3],
             [1, 2, 3, 4]
         ];
-
 
         return create_geom(
             vertices,
@@ -4126,7 +3990,6 @@ var DICE = (function() {
             0.96
         );
     }
-
 
     /**
      * Creates d6 geometry.
@@ -4147,7 +4010,6 @@ var DICE = (function() {
             [-1, 1, 1]
         ];
 
-
         var faces = [
             [0, 3, 2, 1, 1],
             [1, 2, 6, 5, 2],
@@ -4156,7 +4018,6 @@ var DICE = (function() {
             [0, 4, 7, 3, 5],
             [4, 5, 6, 7, 6]
         ];
-
 
         return create_geom(
             vertices,
@@ -4167,7 +4028,6 @@ var DICE = (function() {
             0.96
         );
     }
-
 
     /**
      * Creates d8 geometry.
@@ -4186,7 +4046,6 @@ var DICE = (function() {
             [0, 0, -1]
         ];
 
-
         var faces = [
             [0, 2, 4, 1],
             [0, 4, 3, 2],
@@ -4198,7 +4057,6 @@ var DICE = (function() {
             [1, 5, 3, 8]
         ];
 
-
         return create_geom(
             vertices,
             faces,
@@ -4208,7 +4066,6 @@ var DICE = (function() {
             0.965
         );
     }
-
 
     /**
      * Creates d10 geometry.
@@ -4230,9 +4087,7 @@ var DICE = (function() {
         var v =
             -1;
 
-
         var vertices = [];
-
 
         for (
             var i = 0, b = 0;
@@ -4247,20 +4102,17 @@ var DICE = (function() {
             ]);
         }
 
-
         vertices.push([
             0,
             0,
             -1
         ]);
 
-
         vertices.push([
             0,
             0,
             1
         ]);
-
 
         var faces = [
             [5, 7, 11, 0],
@@ -4286,7 +4138,6 @@ var DICE = (function() {
             [9, 0, 1, v]
         ];
 
-
         return create_geom(
             vertices,
             faces,
@@ -4296,7 +4147,6 @@ var DICE = (function() {
             0.945
         );
     }
-
 
     /**
      * Creates d12 geometry.
@@ -4311,7 +4161,6 @@ var DICE = (function() {
 
         var q =
             1 / p;
-
 
         var vertices = [
             [0, q, p],
@@ -4336,7 +4185,6 @@ var DICE = (function() {
             [-1, -1, -1]
         ];
 
-
         var faces = [
             [2, 14, 4, 12, 0, 1],
             [15, 9, 11, 19, 3, 2],
@@ -4352,7 +4200,6 @@ var DICE = (function() {
             [3, 19, 7, 17, 1, 12]
         ];
 
-
         return create_geom(
             vertices,
             faces,
@@ -4362,7 +4209,6 @@ var DICE = (function() {
             0.968
         );
     }
-
 
     /**
      * Creates d20 geometry.
@@ -4374,7 +4220,6 @@ var DICE = (function() {
 
         var t =
             (1 + Math.sqrt(5)) / 2;
-
 
         var vertices = [
             [-1, t, 0],
@@ -4390,7 +4235,6 @@ var DICE = (function() {
             [-t, 0, -1],
             [-t, 0, 1]
         ];
-
 
         var faces = [
             [0, 11, 5, 1],
@@ -4415,7 +4259,6 @@ var DICE = (function() {
             [9, 8, 1, 20]
         ];
 
-
         return create_geom(
             vertices,
             faces,
@@ -4426,11 +4269,9 @@ var DICE = (function() {
         );
     }
 
-
     // ---------------------------------------------------------------------
     // HELPERS
     // ---------------------------------------------------------------------
-
 
     /**
      * @brief Returns the smallest power of two that is greater than or equal to the given size.
@@ -4450,7 +4291,6 @@ var DICE = (function() {
         return Math.pow(2, Math.ceil(Math.log2(size)));
     }
 
-
     /**
      * Converts a colour value (number or string) to a CSS colour string.
      *
@@ -4464,7 +4304,6 @@ var DICE = (function() {
         return color;
     }
 
-
     /**
      * Returns a random floating point value in [0, 1).
      *
@@ -4477,7 +4316,6 @@ var DICE = (function() {
     function rnd() {
         return Math.random();
     }
-
 
     /**
      * Creates a Cannon.js convex polyhedron from the geometry definition.
@@ -4499,7 +4337,6 @@ var DICE = (function() {
         var cf =
             new Array(faces.length);
 
-
         for (
             var i = 0;
             i < vertices.length;
@@ -4509,7 +4346,6 @@ var DICE = (function() {
             var v =
                 vertices[i];
 
-
             cv[i] =
                 new CANNON.Vec3(
                     v.x * radius,
@@ -4517,7 +4353,6 @@ var DICE = (function() {
                     v.z * radius
                 );
         }
-
 
         for (
             var i = 0;
@@ -4532,13 +4367,11 @@ var DICE = (function() {
                 );
         }
 
-
         return new CANNON.ConvexPolyhedron(
             cv,
             cf
         );
     }
-
 
     /**
      * Creates a Three.js geometry from the supplied polyhedron definition.
@@ -4561,7 +4394,6 @@ var DICE = (function() {
         var geom =
             new THREE.Geometry();
 
-
         for (
             var i = 0;
             i < vertices.length;
@@ -4574,13 +4406,11 @@ var DICE = (function() {
                         radius
                     );
 
-
             vertex.index =
                 geom.vertices.push(
                     vertex
                 ) - 1;
         }
-
 
         for (
             var i = 0;
@@ -4596,7 +4426,6 @@ var DICE = (function() {
 
             var aa =
                 Math.PI * 2 / fl;
-
 
             for (
                 var j = 0;
@@ -4621,7 +4450,6 @@ var DICE = (function() {
                         ii[fl] + 1
                     )
                 );
-
 
                 geom.faceVertexUvs[0].push([
                     new THREE.Vector2(
@@ -4693,9 +4521,7 @@ var DICE = (function() {
             }
         }
 
-
         geom.computeFaceNormals();
-
 
         geom.boundingSphere =
             new THREE.Sphere(
@@ -4703,10 +4529,8 @@ var DICE = (function() {
                 radius
             );
 
-
         return geom;
     }
-
 
     /**
      * Creates the chamfered version of a polyhedron.
@@ -4734,7 +4558,6 @@ var DICE = (function() {
                 vectors.length
             );
 
-
         for (
             var i = 0;
             i < vectors.length;
@@ -4743,7 +4566,6 @@ var DICE = (function() {
 
             corner_faces[i] = [];
         }
-
 
         for (
             var i = 0;
@@ -4763,7 +4585,6 @@ var DICE = (function() {
             var face =
                 new Array(fl);
 
-
             for (
                 var j = 0;
                 j < fl;
@@ -4773,9 +4594,7 @@ var DICE = (function() {
                 var vv =
                     vectors[ii[j]].clone();
 
-
                 center_point.add(vv);
-
 
                 corner_faces[ii[j]].push(
                     face[j] =
@@ -4784,9 +4603,7 @@ var DICE = (function() {
                 );
             }
 
-
             center_point.divideScalar(fl);
-
 
             for (
                 var j = 0;
@@ -4799,7 +4616,6 @@ var DICE = (function() {
                         face[j]
                     ];
 
-
                 vv.subVectors(
                     vv,
                     center_point
@@ -4811,14 +4627,12 @@ var DICE = (function() {
                 );
             }
 
-
             face.push(ii[fl]);
 
             chamfer_faces.push(
                 face
             );
         }
-
 
         /*
          * Create the chamfer faces between neighbouring faces.
@@ -4838,7 +4652,6 @@ var DICE = (function() {
                 var pairs = [];
                 var lastm = -1;
 
-
                 for (
                     var m = 0;
                     m <
@@ -4850,7 +4663,6 @@ var DICE = (function() {
                         faces[j].indexOf(
                             faces[i][m]
                         );
-
 
                     if (
                         n >= 0 &&
@@ -4876,16 +4688,13 @@ var DICE = (function() {
                             );
                         }
 
-
                         lastm = m;
                     }
                 }
 
-
                 if (pairs.length != 4) {
                     continue;
                 }
-
 
                 chamfer_faces.push([
                     chamfer_faces[
@@ -4917,7 +4726,6 @@ var DICE = (function() {
             }
         }
 
-
         /*
          * Create the chamfered corner faces.
          */
@@ -4936,7 +4744,6 @@ var DICE = (function() {
             var count =
                 cf.length - 1;
 
-
             while (count) {
 
                 for (
@@ -4952,7 +4759,6 @@ var DICE = (function() {
                             ]
                         );
 
-
                     if (
                         index >= 0 &&
                         index < 4
@@ -4962,10 +4768,8 @@ var DICE = (function() {
                             index = 3;
                         }
 
-
                         var next_vertex =
                             chamfer_faces[m][index];
-
 
                         if (
                             cf.indexOf(
@@ -4982,26 +4786,21 @@ var DICE = (function() {
                     }
                 }
 
-
                 --count;
             }
 
-
             face.push(-1);
-
 
             chamfer_faces.push(
                 face
             );
         }
 
-
         return {
             vectors: chamfer_vectors,
             faces: chamfer_faces
         };
     }
-
 
     /**
      * Builds the complete Three.js/Cannon.js geometry.
@@ -5028,7 +4827,6 @@ var DICE = (function() {
                 vertices.length
             );
 
-
         for (
             var i = 0;
             i < vertices.length;
@@ -5043,14 +4841,12 @@ var DICE = (function() {
                     .normalize();
         }
 
-
         var cg =
             chamfer_geom(
                 vectors,
                 faces,
                 chamfer
             );
-
 
         var geom =
             make_geom(
@@ -5061,7 +4857,6 @@ var DICE = (function() {
                 af
             );
 
-
         geom.cannon_shape =
             create_shape(
                 vectors,
@@ -5069,10 +4864,8 @@ var DICE = (function() {
                 radius
             );
 
-
         return geom;
     }
-
 
     /**
      * Creates a slightly randomised throw direction.
@@ -5091,7 +4884,6 @@ var DICE = (function() {
             Math.PI / 5 -
             Math.PI / 5 / 2;
 
-
         var vec = {
 
             x:
@@ -5107,7 +4899,6 @@ var DICE = (function() {
                     Math.cos(random_angle)
         };
 
-
         /*
          * Prevent division by zero later when calculating the launch
          * position.
@@ -5116,15 +4907,12 @@ var DICE = (function() {
             vec.x = 0.01;
         }
 
-
         if (vec.y == 0) {
             vec.y = 0.01;
         }
 
-
         return vec;
     }
-
 
     /**
      * Calculates the currently visible face of a physical die.
@@ -5149,11 +4937,9 @@ var DICE = (function() {
                     : 1
             );
 
-
         var closest_face;
         var closest_angle =
             Math.PI * 2;
-
 
         for (
             var i = 0,
@@ -5165,7 +4951,6 @@ var DICE = (function() {
             var face =
                 dice.geometry.faces[i];
 
-
             /*
              * Material zero is the blank/internal material and is not a
              * numbered face.
@@ -5175,7 +4960,6 @@ var DICE = (function() {
             ) {
                 continue;
             }
-
 
             var angle =
                 face.normal
@@ -5187,7 +4971,6 @@ var DICE = (function() {
                         vector
                     );
 
-
             if (
                 angle < closest_angle
             ) {
@@ -5196,7 +4979,6 @@ var DICE = (function() {
                 closest_face = face;
             }
         }
-
 
         /*
          * It is theoretically possible for no numbered face to be found.
@@ -5207,7 +4989,6 @@ var DICE = (function() {
                 ? closest_face.materialIndex - 1
                 : -1;
 
-
         /*
          * d100 uses percentile faces on d10 geometry.
          */
@@ -5217,7 +4998,6 @@ var DICE = (function() {
 
             matindex *= 10;
         }
-
 
         /*
          * d10 internally uses 0 for the face which is publicly exposed as 10.
@@ -5237,7 +5017,6 @@ var DICE = (function() {
 
         return matindex;
     }
-
 
     /**
      * Converts the physical dice meshes into rich result objects.
@@ -5264,7 +5043,6 @@ var DICE = (function() {
 
         var values = [];
 
-
         for (
             var i = 0;
             i < dices.length;
@@ -5273,7 +5051,6 @@ var DICE = (function() {
 
             var dice =
                 dices[i];
-
 
             values.push({
 
@@ -5300,10 +5077,8 @@ var DICE = (function() {
             });
         }
 
-
         return values;
     }
-
 
     /**
      * Shifts a die's visible face labels so that the requested value becomes
@@ -5328,7 +5103,6 @@ var DICE = (function() {
                 dice.dice_type
             ];
 
-
         /*
          * Public d10 value 10 corresponds to internal face 0.
          */
@@ -5351,7 +5125,6 @@ var DICE = (function() {
             value = 0;
         }
 
-
         /*
          * Ignore invalid requested values.
          */
@@ -5365,14 +5138,11 @@ var DICE = (function() {
             return;
         }
 
-
         var num =
             value - res;
 
-
         var geom =
             dice.geometry.clone();
-
 
         for (
             var i = 0,
@@ -5385,17 +5155,14 @@ var DICE = (function() {
                 geom.faces[i]
                     .materialIndex;
 
-
             if (
                 matindex == 0
             ) {
                 continue;
             }
 
-
             matindex +=
                 num - 1;
-
 
             while (
                 matindex > r[1]
@@ -5405,7 +5172,6 @@ var DICE = (function() {
                     r[1];
             }
 
-
             while (
                 matindex < r[0]
             ) {
@@ -5414,12 +5180,10 @@ var DICE = (function() {
                     r[1];
             }
 
-
             geom.faces[i]
                 .materialIndex =
                     matindex + 1;
         }
-
 
         /*
          * d4 requires regenerating its special face-label material because
@@ -5447,11 +5211,9 @@ var DICE = (function() {
                 );
         }
 
-
         dice.geometry =
             geom;
     }
-
 
     return that;
 

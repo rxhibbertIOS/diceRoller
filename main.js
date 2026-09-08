@@ -87,19 +87,15 @@ window.onkeydown = function(e) {
             if(numD100 === '') numD100 = '1';
             //console.log('num d100s: ' + numD100);
             for(let i = 0; i < numD100; i++) {
-                inputVal += '+d9';
+                //inputVal += '+d9';
             }
         }
         //check for too many dice
         let d = DICE.parse_notation(inputVal);
         let numDice = d.set.length;
-        if(numDice > 20) {
-            elem.diceLimit.style.display = 'block';
-        } else {
-            box.setDice(inputVal);
-            show_numPad(false);
-            show_instructions(true);
-        }
+        box.setDice(inputVal);
+        show_numPad(false);
+        show_instructions(true);
     }
 
     that.clearInput = function() {
