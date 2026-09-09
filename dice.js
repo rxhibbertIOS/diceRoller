@@ -54,6 +54,9 @@
  * - Group rules now stored as an array `rules` instead of a single `rule`.
  * - Removed hard limit of 10 dice per group (now configurable via `max_dice_per_group`).
  * - Added safety guards against infinite recursion.
+ * - Explosion dice now inherit group colour.
+ * - Simple rolls now also produce a full audit trail.
+ * - Fixed colour inheritance for deeper recursion levels.
  */
 
 var DICE = (function() {
@@ -175,9 +178,10 @@ var DICE = (function() {
         angular_damping: 0.1,
         spot_light_intensity: 2.0,
 
-        // New settings for advanced rules
+        // settings for advanced rules
         max_recursion_depth: 10,        // prevent infinite loops
         max_dice_per_roll: 100,         // safety cap for total dice
+        explosion_delay_ms: 300,        // delay before exploding dice are rolled
     };
 
     /**
@@ -360,6 +364,7 @@ var DICE = (function() {
     d100_compound: { type: 'boolean', default: true, description: 'Roll d100 as tens + units' },
     max_recursion_depth: { type: 'integer', min: 1, max: 50, default: 10, description: 'Maximum explosion/reroll recursions' },
     max_dice_per_roll: { type: 'integer', min: 1, max: 500, default: 100, description: 'Safety cap on total dice generated' },
+    explosion_delay_ms: { type: 'integer', min: 0, max: 1500, default: 300, description: 'Delay before exploding dice are rolled (ms)' },
     };
 
     // Helper to get current values from vars or instance
@@ -393,6 +398,7 @@ var DICE = (function() {
             d100_compound: () => vars.d100_compound,
             max_recursion_depth: () => vars.max_recursion_depth,
             max_dice_per_roll: () => vars.max_dice_per_roll,
+            explosion_delay_ms: () => vars.explosion_delay_ms
         };
         return map[name] ? map[name]() : undefined;
     }
@@ -564,6 +570,8 @@ var DICE = (function() {
             this.scene,
             this.camera
         );
+
+        this._onExplosion = null;
     };
 
     /**
@@ -692,6 +700,15 @@ var DICE = (function() {
      */
     that.dice_box.prototype.setDice = function(diceToRoll) {
         this.diceToRoll = diceToRoll;
+    };
+
+    /**
+     * Sets the function to be called when a die explodes (if explosions are used).
+     *
+     * @param {function} callBackFunction
+     */
+    that.dice_box.prototype.setOnExplosion = function(callBackFunction) {
+        this._onExplosion = callBackFunction;
     };
 
     /**
@@ -1514,13 +1531,16 @@ var DICE = (function() {
                     }
                 }
                 if (!origGroup) continue;
+                // Determine the original group ID for colour inheritance
+                var originalId = origGroup.originalGroupId !== undefined ? origGroup.originalGroupId : origGroup.id;
                 groupsMap[gid] = {
                     id: Object.keys(groupsMap).length,
                     count: 0,
                     type: origGroup.type,
-                    rules: origGroup.rules.slice(), // copy rules
+                    rules: origGroup.rules.slice(),
                     isCompound: origGroup.isCompound,
-                    visual: origGroup.visual
+                    visual: origGroup.visual ? JSON.parse(JSON.stringify(origGroup.visual)) : null,
+                    originalGroupId: originalId   // propagate original ID
                 };
             }
             groupsMap[gid].count++;
@@ -1792,6 +1812,11 @@ var DICE = (function() {
                         }
                         if (explodeCondition) {
                             explodedDice.push(die);
+                            // Find the physical mesh for this die
+                            var mesh = box.dices.find(d => d.dice_id === die.diceId);
+                            if (mesh) {
+                                apply_explosion_highlight(mesh);
+                            }
                             logEvent(audit, depth, 'explode', 'Die #' + die.diceId + ' (value ' + die.value + ') exploded.', { diceId: die.diceId, value: die.value, rule: rule.type });
                         }
                     }
@@ -1821,6 +1846,10 @@ var DICE = (function() {
                         }
                     }
                 }
+
+                if (explodedDice.length > 0) {
+                    box.renderer.render(box.scene, box.camera);
+                }
             }
 
             // Accumulate kept dice
@@ -1836,19 +1865,46 @@ var DICE = (function() {
             } else {
                 // Recurse – note: we do NOT call box.clear() because box.roll will clear on next call
                 var newTotal = accumulatedTotal + phaseTotal;
-                _process_recursive_roll(
-                    box,
-                    nextNotation,
-                    newTotal,
-                    depth + 1,
-                    maxDepth,
-                    vector,
-                    boost,
-                    null,               // no forced results for subsequent phases
-                    finalCallback,
-                    audit,
-                    keptAccum
-                );
+                // If there were explosions, notify and delay
+                var delay = (explodedDice.length > 0) ? vars.explosion_delay_ms : 0;
+                if (explodedDice.length > 0 && box._onExplosion) {
+                    box._onExplosion({
+                        explodedDice: explodedDice,
+                        phase: depth,
+                        nextNotation: nextNotation
+                    });
+                }
+                if (delay > 0) {
+                    setTimeout(function() {
+                        _process_recursive_roll(
+                            box,
+                            nextNotation,
+                            newTotal,
+                            depth + 1,
+                            maxDepth,
+                            vector,
+                            boost,
+                            null,               // no forced results for subsequent phases
+                            finalCallback,
+                            audit,
+                            keptAccum
+                        );
+                    }, delay);
+                } else {
+                    _process_recursive_roll(
+                            box,
+                            nextNotation,
+                            newTotal,
+                            depth + 1,
+                            maxDepth,
+                            vector,
+                            boost,
+                            null,               // no forced results for subsequent phases
+                            finalCallback,
+                            audit,
+                            keptAccum
+                        );
+                }
             }
         });
     }
@@ -1992,12 +2048,6 @@ var DICE = (function() {
             var keptAccum = [];
             var maxDepth = vars.max_recursion_depth;
 
-            // We need to generate vectors for the first phase normally
-            // But we also need to handle forced results if any.
-            // We'll pass them into the first _run_physics_phase? Actually forced results are applied after physics.
-            // We'll handle forced results by overriding faces after physics.
-            // So we'll run physics, then if forced results exist, shift faces.
-
             // We'll call _process_recursive_roll with the initial notation
             _process_recursive_roll(
                 box,
@@ -2007,7 +2057,7 @@ var DICE = (function() {
                 maxDepth,
                 vector,
                 boost,
-                before_roll, // not used inside recursion
+                request_results, // pass forced results for first phase
                 after_roll,
                 audit,
                 keptAccum
@@ -2021,8 +2071,14 @@ var DICE = (function() {
                 box.roll(vectors, request_results || notation.result, function(rawDiceResults) {
                     // Now evaluate keep/drop on combined results (no recursion)
                     var combined = combine_compound_results(rawDiceResults, box.dices);
-                    // Apply keep/drop
-                    apply_static_rules(notation, combined, [], 0); // audit not needed for simple
+                    
+                    // Build audit for simple roll
+                    var audit = [];
+                    var vals = combined.map(d => d.value).join(', ');
+                    logEvent(audit, 0, 'roll', 'Rolled ' + combined.length + ' dice: ' + vals + '.', { dice: combined.map(d => ({id: d.diceId, value: d.value})) });
+                    
+                    // Apply keep/drop with audit
+                    apply_static_rules(notation, combined, audit, 0);
                     apply_dropped_visuals_to_compound(combined, box.dices);
                     box.renderer.render(box.scene, box.camera);   
 
@@ -2043,8 +2099,8 @@ var DICE = (function() {
                     notation.diceResults = combined;
                     notation.resultTotal = resultTotal;
                     notation.resultString = resultString;
-                    notation.audit = [];
-                    notation.auditString = '';
+                    notation.audit = audit;
+                    notation.auditString = that.formatAudit(audit);
                     if (after_roll) after_roll(notation);
                     console.log('Dice Roll: Final result:', notation.resultString, 'Total:', notation.resultTotal);
                     console.table(notation);
@@ -2132,12 +2188,14 @@ var DICE = (function() {
             * Determine colour for this group.
             * - If group.visual.color is set, use that.
             * - Otherwise pick a preset colour based on group.id (mod 10).
+            *   For groups that are clones from an explosion, use the originalGroupId.
             */
             var groupColor;
+            var colorId = group.originalGroupId !== undefined ? group.originalGroupId : group.id;
             if (group.visual && group.visual.color !== undefined) {
                 groupColor = group.visual.color;
             } else {
-                groupColor = vars.preset_colours[group.id % vars.preset_colours.length];
+                groupColor = vars.preset_colours[colorId % vars.preset_colours.length];
             }
 
             // Whether this group is compound (e.g., d100 with units)
@@ -3314,6 +3372,35 @@ var DICE = (function() {
         if (droppedCount > 0) {
             console.log('Dice Roll: Dropped visuals applied to', droppedCount, 'physical dice (', combinedResults.filter(r=>!r.kept).length, 'logical dice )');
         }
+    }
+
+    // ---------------------------------------------------------------------
+    // EXPLOSION VISUAL EFFECTS
+    // ---------------------------------------------------------------------
+
+    /**
+     * Applies a subtle emissive glow to a physical die that exploded.
+     * @param {THREE.Mesh} mesh - The die mesh.
+     */
+    function apply_explosion_highlight(mesh) {
+        if (!mesh || !mesh.material) return;
+        if (mesh._exploded) return; // already highlighted
+
+        // Get the materials array (for MeshFaceMaterial, it's under .materials)
+        var materials = Array.isArray(mesh.material) ? mesh.material : 
+                        (mesh.material.materials ? mesh.material.materials : [mesh.material]);
+
+        for (var i = 0; i < materials.length; i++) {
+            var mat = materials[i];
+            if (!mat) continue;
+            // Do NOT change the base colour – keep the original texture.
+            // Instead, add a warm emissive glow.
+            mat.emissive = new THREE.Color(0xff8800); // orange-gold
+            mat.emissiveIntensity = 0.1;              // subtle glow
+            // Slightly increase shininess for a more “excited” look
+            mat.shininess = 40;
+        }
+        mesh._exploded = true;
     }
 
     /**
