@@ -1044,29 +1044,6 @@ var DICE = (function() {
                         continue;
                     }
 
-                    // ! or !>N (explode)
-                    m = remaining.match(/^!>(?:\s*)(\d+)/);
-                    if (m) {
-                        rules.push({
-                            type: 'explode',
-                            threshold: parseInt(m[1], 10),
-                            condition: 'greater-than'
-                        });
-                        remaining = remaining.substring(m[0].length);
-                        matched = true;
-                        continue;
-                    }
-                    m = remaining.match(/^!/);
-                    if (m) {
-                        rules.push({
-                            type: 'explode',
-                            threshold: 'max'
-                        });
-                        remaining = remaining.substring(m[0].length);
-                        matched = true;
-                        continue;
-                    }
-
                     // !! or !!>N (compounding explode)
                     m = remaining.match(/^!!>(?:\s*)(\d+)/);
                     if (m) {
@@ -1083,6 +1060,29 @@ var DICE = (function() {
                     if (m) {
                         rules.push({
                             type: 'explode-compounding',
+                            threshold: 'max'
+                        });
+                        remaining = remaining.substring(m[0].length);
+                        matched = true;
+                        continue;
+                    }
+
+                    // ! or !>N (explode)
+                    m = remaining.match(/^!>(?:\s*)(\d+)/);
+                    if (m) {
+                        rules.push({
+                            type: 'explode',
+                            threshold: parseInt(m[1], 10),
+                            condition: 'greater-than'
+                        });
+                        remaining = remaining.substring(m[0].length);
+                        matched = true;
+                        continue;
+                    }
+                    m = remaining.match(/^!/);
+                    if (m) {
+                        rules.push({
+                            type: 'explode',
                             threshold: 'max'
                         });
                         remaining = remaining.substring(m[0].length);
@@ -1763,7 +1763,7 @@ var DICE = (function() {
             apply_static_rules(parsedNotation, combined, audit, depth);
             apply_dropped_visuals_to_compound(combined, box.dices);
             box.renderer.render(box.scene, box.camera);   
-            
+
             // Process dynamic rules (explode, reroll) – these may generate new dice
             var phaseTotal = 0;
             var explodedDice = [];
