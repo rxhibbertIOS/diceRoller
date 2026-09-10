@@ -1,4 +1,4 @@
-// die-builder.js - Full Edition with Multi-Rule, Help Panel, Popup, and Input Parsing
+// die-builder.js - Full Edition with Trigger Button, Flip Help, Validation API, A11y
 (function(root, factory) {
   if (typeof define === 'function' && define.amd) {
     define([], factory);
@@ -10,7 +10,7 @@
 }(typeof self !== 'undefined' ? self : this, function() {
 
   // ============================================================
-  // 1. RULES DEFINITION (with full metadata)
+  // 1. RULES DEFINITION
   // ============================================================
   const RULE_DEFS = {
     keep: {
@@ -44,19 +44,13 @@
     explode: {
       id: 'explode', label: 'Explode', category: 'explosion',
       needsModifier: false, needsLimit: true, limitMin: 1,
-      notation: (g, mod, limitOp, limitVal) => {
-        const op = (limitOp === '=') ? '' : limitOp;
-        return `!${op}${limitVal}`;
-      },
+      notation: (g, mod, limitOp, limitVal) => `!${limitOp}${limitVal}`,
       description: 'When a die rolls the trigger value, add another die (explosion).'
     },
     explodeCompounding: {
       id: 'explodeCompounding', label: 'Explode (Compounding)', category: 'explosion',
       needsModifier: false, needsLimit: true, limitMin: 1,
-      notation: (g, mod, limitOp, limitVal) => {
-        const op = (limitOp === '=') ? '' : limitOp;
-        return `!!${op}${limitVal}`;
-      },
+      notation: (g, mod, limitOp, limitVal) => `!!${limitOp}${limitVal}`,
       description: 'Exploded dice are added together into a single result.'
     },
     penetrate: {
@@ -133,74 +127,104 @@
     }
   };
 
-  // None first, then the rest in priority order
   const RULE_CATEGORIES = {
-    none: { label: '⚪ No Rule', order: 0 },
-    filter:  { label: '📊 Keep/Drop', order: 1 },
-    explosion: { label: '💥 Explosions', order: 2 },
-    reroll: { label: '🔄 Rerolls', order: 3 },
-    sort: { label: '📋 Sorting', order: 4 },
-    critical: { label: '🎯 Criticals', order: 5 },
-    success: { label: '✅ Success Counting', order: 6 }
+    none: { label: 'No Rule', order: 0 },
+    filter:  { label: 'Keep/Drop', order: 1 },
+    explosion: { label: 'Explosions', order: 2 },
+    reroll: { label: 'Rerolls', order: 3 },
+    sort: { label: 'Sorting', order: 4 },
+    critical: { label: 'Criticals', order: 5 },
+    success: { label: 'Success Counting', order: 6 }
   };
 
   // ============================================================
   // 2. THEME PALETTES
   // ============================================================
   const LIGHT_PALETTE = {
-    primary: '#6366f1',
-    primaryHover: '#4f46e5',
-    primaryRing: 'rgba(99,102,241,0.15)',
-    success: '#059669',
-    danger: '#dc2626',
-    warning: '#d97706',
-    background: '#ffffff',
-    surface: '#f8fafc',
-    surfaceHover: '#f1f5f9',
-    text: '#0f172a',
-    textMuted: '#64748b',
-    textSubtle: '#94a3b8',
-    border: '#e2e8f0',
-    borderHover: '#cbd5e1',
-    borderSubtle: '#f1f5f9',
+    // — Neutrals: the 3 main colours doing most of the work.
+    background:   '#fafaf9',
+    surface:      '#f4f3f1',
+    surfaceHover: '#eae8e4',
+
+    text:       '#1c1c1c',
+    textMuted:  '#6b6b6b',
+    textSubtle: '#9c9c9c',
+
+    border:       '#e6e4df',
+    borderHover:  '#d5d2cb',
+    borderSubtle: '#eeebe6',
+
     inputBg: '#ffffff',
-    shadow: 'rgba(15,23,42,0.12)',
-    fontFamily: '-apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif'
+    shadow:  'rgba(28, 28, 28, 0.08)',
+
+    // — Accent 1: warm muted clay. Primary actions, focus rings.
+    primary:      '#b5614f',
+    primaryHover: '#9d4f3f',
+    primaryRing:  'rgba(181, 97, 79, 0.14)',
+
+    // — Semantic: muted, kept in their traditional hue families.
+    success: '#5c8a63',   // sage green
+    danger:  '#a55047',   // brick red
+    warning: '#a67c4a',   // ochre amber
+
+    fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif'
   };
 
   const DARK_PALETTE = {
-    primary: '#818cf8',
-    primaryHover: '#6366f1',
-    primaryRing: 'rgba(129,140,248,0.22)',
-    success: '#34d399',
-    danger: '#f87171',
-    warning: '#fbbf24',
-    background: '#0f172a',
-    surface: '#1e293b',
-    surfaceHover: '#334155',
-    text: '#f1f5f9',
-    textMuted: '#94a3b8',
-    textSubtle: '#64748b',
-    border: '#334155',
-    borderHover: '#475569',
-    borderSubtle: '#1e293b',
-    inputBg: '#1e293b',
-    shadow: 'rgba(0,0,0,0.5)',
+    background:   '#1c1c1c',
+    surface:      '#242424',
+    surfaceHover: '#2e2e2e',
+
+    text:       '#edece9',
+    textMuted:  '#9c9c9c',
+    textSubtle: '#6b6b6b',
+
+    border:       '#333330',
+    borderHover:  '#464540',
+    borderSubtle: '#252522',
+
+    inputBg: '#242424',
+    shadow:  'rgba(0, 0, 0, 0.55)',
+
+    // — Accent 1: same hue, lifted for dark bg contrast.
+    primary:      '#d09b8c',
+    primaryHover: '#ddb1a4',
+    primaryRing:  'rgba(208, 155, 140, 0.22)',
+
+    // — Semantic: same hues, lifted the same amount.
+    success: '#8fb895',   // lifted sage
+    danger:  '#d1877e',   // lifted brick
+    warning: '#c9a678',   // lifted ochre
+
     fontFamily: LIGHT_PALETTE.fontFamily
   };
 
   // ============================================================
-  // 3. DEFAULTS & CONFIGURATION
+  // 3. DEFAULTS
   // ============================================================
+  const DEFAULT_TRIGGER_ICON = `
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none"
+         stroke="currentColor" stroke-width="1.75"
+         stroke-linecap="round" stroke-linejoin="round"
+         aria-hidden="true" focusable="false">
+      <path d="m14 7 3 3"/>
+      <path d="M5 6v4"/>
+      <path d="M19 14v4"/>
+      <path d="M10 2v2"/>
+      <path d="M7 8H3"/>
+      <path d="M21 16h-4"/>
+      <path d="M11 3H9"/>
+      <path d="M17 15h-2"/>
+      <path d="M3 21 21 3"/>
+    </svg>
+  `;
+
   const DEFAULTS = {
     dieTypes: ['d4', 'd6', 'd8', 'd10', 'd12', 'd20', 'd100'],
     comparisonOps: ['=', '>', '<'],
-    theme: {
-      mode: 'light',
-      colors: {} // user overrides layered on top of the mode's defaults
-    },
+    theme: { mode: 'light', colors: {} },
     labels: {
-      title: '🎲 Dice Notation Builder',
+      title: 'Dice Notation Builder',
       addGroup: 'Add Group',
       updateGroup: 'Update',
       clearAll: 'Clear All',
@@ -223,28 +247,24 @@
       addRule: 'Add Rule',
       removeRule: 'Remove',
       help: 'Help',
-      glossaryTitle: '📖 Notation Glossary',
+      backToBuilder: 'Back to builder',
+      openBuilder: 'Open dice notation builder',
+      glossaryTitle: 'Notation Guide',
       glossaryClose: 'Close Glossary'
     },
     callbacks: {
-      onChange: null,
-      onGroupAdd: null,
-      onGroupRemove: null,
-      onClear: null,
-      onAccept: null,
-      onClose: null,
-      onError: null
+      onChange: null, onGroupAdd: null, onGroupRemove: null, onClear: null,
+      onAccept: null, onClose: null, onError: null, onValidate: null
     },
     features: {
-      allowManual: true,
-      showPreview: true,
-      showHelp: true,
-      autoValidate: true,
-      showCategories: true
+      allowManual: true, showPreview: true, showHelp: true,
+      autoValidate: true, showCategories: true
     },
     popup: {
       enabled: false,
       targetInput: null,
+      trigger: 'focus',          // 'focus' | 'button' | 'both'
+      triggerIcon: DEFAULT_TRIGGER_ICON,
       width: '80vw',
       maxHeight: '80vh',
       closeOnOutsideClick: true,
@@ -267,17 +287,11 @@
     }
     return result;
   }
-
   function getElement(el) {
     return typeof el === 'string' ? document.querySelector(el) : el;
   }
-
   function safeCall(fn, ...args) {
-    try {
-      if (fn && typeof fn === 'function') return fn(...args);
-    } catch (e) {
-      // ignore
-    }
+    try { if (fn && typeof fn === 'function') return fn(...args); } catch (_) {}
   }
 
   // ============================================================
@@ -288,6 +302,7 @@
       this.config = deepMerge(DEFAULTS, config);
       this.container = null;
       this.popupContainer = null;
+      this.triggerBtn = null;
       this.targetInput = null;
       this.groups = [];
       this.groupCounter = 0;
@@ -299,13 +314,22 @@
       this._clickingInside = false;
       this._clickingInsideTimer = null;
       this._lastInputValue = null;
+      this._suppressFocus = false;
+      this._focusTrapHandler = null;
+      this._faceResizeObserver = null;
+      this._triggerScrollHandler = null;
+      this._triggerResizeHandler = null;
+      this._originalPaddingRight = null;
+      this._triggerStyleEl = null;
+      this._lastSyncedHeight = 0;
+      this._initialHeightSet = false;
+      this._instanceId = 'db-' + Math.random().toString(36).slice(2, 9);
 
       if (this.config.callbacks.onNotationChange && !this.config.callbacks.onChange) {
         this.config.callbacks.onChange = this.config.callbacks.onNotationChange;
       }
     }
 
-    // Resolve the effective palette: mode default → user overrides
     _resolvePalette() {
       const mode = this.config.theme.mode === 'dark' ? 'dark' : 'light';
       const base = mode === 'dark' ? DARK_PALETTE : LIGHT_PALETTE;
@@ -328,6 +352,7 @@
         this._bindPopupEvents();
         this._bindCommonEvents();
         this._bindFormEvents();
+        this._bindFaceResizeObserver();
         this._renderGroups();
         this._updateOutput();
       }
@@ -338,18 +363,13 @@
     // 5b. INIT / ATTACH
     // ============================================================
     init(element, options = {}) {
-      if (Object.keys(options).length > 0) {
-        this.config = deepMerge(this.config, options);
-      }
+      if (Object.keys(options).length > 0) this.config = deepMerge(this.config, options);
       return this.inject(element);
     }
 
     inject(selector) {
       this.container = getElement(selector);
-      if (!this.container) {
-        this._handleError(new Error('Container not found'));
-        return this;
-      }
+      if (!this.container) { this._handleError(new Error('Container not found')); return this; }
       this._isPopup = false;
       this._renderStandalone();
       this._bindCommonEvents();
@@ -362,53 +382,82 @@
     attachTo(inputSelector, options = {}) {
       if (options) this.config = deepMerge(this.config, options);
       this.targetInput = getElement(inputSelector || this.config.popup.targetInput);
-      if (!this.targetInput) {
-        this._handleError(new Error('Target input not found'));
-        return this;
-      }
+      if (!this.targetInput) { this._handleError(new Error('Target input not found')); return this; }
 
       this.config.popup.enabled = true;
       this._isPopup = true;
+      const trigger = this.config.popup.trigger;
+      const useButton = trigger === 'button' || trigger === 'both';
 
+      // Input accessibility
+      if (!this.targetInput.id) this.targetInput.id = this._instanceId + '-input';
+      this.targetInput.setAttribute('aria-haspopup', 'dialog');
+      this.targetInput.setAttribute('aria-expanded', 'false');
+      this.targetInput.setAttribute('autocomplete', 'off');
+
+      // Popup container
       this.popupContainer = document.createElement('div');
       this.popupContainer.className = 'die-builder-popup';
       this.popupContainer.style.display = 'none';
+      this.popupContainer.setAttribute('role', 'dialog');
+      this.popupContainer.setAttribute('aria-modal', 'true');
+      this.popupContainer.setAttribute('aria-labelledby', this._instanceId + '-title');
       document.body.appendChild(this.popupContainer);
 
       this.popupContainer.addEventListener('mousedown', () => {
         this._clickingInside = true;
         clearTimeout(this._clickingInsideTimer);
-        this._clickingInsideTimer = setTimeout(() => {
-          this._clickingInside = false;
-        }, 400);
+        this._clickingInsideTimer = setTimeout(() => { this._clickingInside = false; }, 400);
       });
 
       this._renderPopup();
       this._bindPopupEvents();
       this._bindCommonEvents();
       this._bindFormEvents();
+      this._bindFaceResizeObserver();
+      this._bindFocusTrap();
 
       this._lastInputValue = (this.targetInput.value || '').trim();
-      if (this._lastInputValue) {
-        this._parseAndSetNotation(this._lastInputValue);
-      }
+      if (this._lastInputValue) this._parseAndSetNotation(this._lastInputValue);
 
       this._renderGroups();
       this._updateOutput();
+      this._emitValidation();
 
-      this.targetInput.addEventListener('focus', () => this.show());
-      this.targetInput.addEventListener('blur', () => {
-        setTimeout(() => {
-          if (this._clickingInside) return;
-          if (this._isVisible && !this.popupContainer.contains(document.activeElement)) {
-            this.hide(false);
-          }
-        }, 150);
+      // Focus trigger (opt-in)
+      if (trigger === 'focus' || trigger === 'both') {
+        this.targetInput.addEventListener('focus', () => {
+          if (this._suppressFocus) return;
+          this.show();
+        });
+      }
+
+      // Blur: only close when in focus-only mode. In button/both mode,
+      // focus loss shouldn't dismiss because the user clicked the button.
+      if (trigger === 'focus') {
+        this.targetInput.addEventListener('blur', () => {
+          setTimeout(() => {
+            if (this._clickingInside) return;
+            if (this._isVisible && !this.popupContainer.contains(document.activeElement)) {
+              this.hide(false);
+            }
+          }, 150);
+        });
+      }
+
+      // Enter closes without re-parsing (keeps what the user typed)
+      this.targetInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' && this._isVisible) {
+          e.preventDefault();
+          this.hide(false);
+        }
       });
 
+      // Outside click always closes
       if (this.config.popup.closeOnOutsideClick) {
         document.addEventListener('click', (e) => {
           if (this._clickingInside) return;
+          if (this.triggerBtn && this.triggerBtn.contains(e.target)) return;
           if (this._isVisible &&
               !this.popupContainer.contains(e.target) &&
               e.target !== this.targetInput) {
@@ -423,14 +472,193 @@
         });
       }
 
-      window.addEventListener('scroll', () => this._positionPopup(), true);
-      window.addEventListener('resize', () => this._positionPopup());
+      window.addEventListener('scroll', () => {
+        this._positionPopup();
+        this._positionTrigger();
+      }, true);
+      window.addEventListener('resize', () => {
+        this._positionPopup();
+        this._positionTrigger();
+      });
+
+      // Explicit trigger button
+      if (useButton) this._createTriggerButton();
+
+      // Reposition on focus — input may have moved since last render
+      this.targetInput.addEventListener('focus', () => this._positionTrigger());
 
       return this;
     }
 
     // ============================================================
-    // 5c. POPUP CONTROL
+    // 5c. TRIGGER BUTTON
+    // ============================================================
+    _createTriggerButton() {
+      if (!this.targetInput) return;
+      if (this.triggerBtn) return;
+
+      const c = this._resolvePalette();
+      const uid = this._instanceId;
+
+      // Inject trigger styles into <head> (not the popup) so they apply
+      // to the body-level button regardless of popup DOM scoping.
+      if (!this._triggerStyleEl) {
+        const style = document.createElement('style');
+        style.id = 'db-trigger-style-' + uid;
+        style.textContent = `
+          .db-trigger-btn-${uid} {
+            position: fixed;
+            z-index: 9998;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            padding: 0;
+            margin: 0;
+            border: 1px solid transparent;
+            background: transparent;
+            color: ${c.textMuted};
+            border-radius: 6px;
+            cursor: pointer;
+            font-family: ${c.fontFamily};
+            box-sizing: border-box;
+            line-height: 1;
+            -webkit-tap-highlight-color: transparent;
+          }
+          .db-trigger-btn-${uid}:hover {
+            background: ${c.surfaceHover};
+            color: ${c.primary};
+          }
+          .db-trigger-btn-${uid}:focus-visible {
+            outline: 2px solid ${c.primary};
+            outline-offset: 1px;
+          }
+          .db-trigger-btn-${uid}:active {
+            background: ${c.primaryRing};
+          }
+          .db-trigger-btn-${uid} svg { display: block; }
+        `;
+        document.head.appendChild(style);
+        this._triggerStyleEl = style;
+      }
+
+      // Leave room for the chevron inside the input
+      this._originalPaddingRight = this.targetInput.style.paddingRight;
+      const padRight = parseInt(getComputedStyle(this.targetInput).paddingRight, 10) || 0;
+      if (padRight < 36) this.targetInput.style.paddingRight = '36px';
+
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'db-trigger-btn db-trigger-btn-' + uid;
+      btn.setAttribute('aria-label', this.config.labels.openBuilder);
+      btn.setAttribute('title', this.config.labels.openBuilder);
+      btn.setAttribute('aria-haspopup', 'dialog');
+      btn.setAttribute('aria-expanded', 'false');
+      btn.innerHTML = this.config.popup.triggerIcon || DEFAULT_TRIGGER_ICON;
+
+      // Belt-and-braces: inline the critical layout styles so the button
+      // is still usable even if the injected CSS is somehow blocked.
+      Object.assign(btn.style, {
+        position: 'fixed',
+        zIndex: '9998',
+        display: 'inline-flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        padding: '0',
+        margin: '0',
+        border: '1px solid transparent',
+        background: 'transparent',
+        cursor: 'pointer',
+        boxSizing: 'border-box'
+      });
+      btn.style.color = c.textMuted;
+
+      // Prevent the input from losing focus when the chevron is clicked
+      btn.addEventListener('mousedown', (e) => e.preventDefault());
+
+      btn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        this._suppressFocus = true;
+        setTimeout(() => { this._suppressFocus = false; }, 200);
+        if (this._isVisible) {
+          this.hide(false);
+        } else {
+          const v = (this.targetInput.value || '').trim();
+          if (v !== (this._lastInputValue || '')) {
+            this._lastInputValue = v;
+            this._parseAndSetNotation(v);
+            this._refreshForm();
+          }
+          this.show();
+        }
+      });
+
+      document.body.appendChild(btn);
+      this.triggerBtn = btn;
+
+      // Position now, again after the next frame, and again after fonts /
+      // late CSS have settled (in case the input hadn't laid out yet).
+      this._positionTrigger();
+      requestAnimationFrame(() => this._positionTrigger());
+      setTimeout(() => this._positionTrigger(), 150);
+    }
+
+    _positionTrigger() {
+      if (!this.triggerBtn || !this.targetInput) return;
+
+      // Hide while the popup is open
+      if (this._isVisible) {
+        this.triggerBtn.style.display = 'none';
+        return;
+      }
+
+      const rect = this.targetInput.getBoundingClientRect();
+
+      // Hide if the input isn't laid out (0×0) — avoids positioning
+      // the chevron off-screen at top:0/left:0
+      if (rect.width === 0 || rect.height === 0) {
+        this.triggerBtn.style.display = 'none';
+        return;
+      }
+
+      // Hide if the input is off-screen
+      const inView = rect.bottom > -20 && rect.top < (window.innerHeight + 20);
+      if (!inView) {
+        this.triggerBtn.style.display = 'none';
+        return;
+      }
+
+      // Size scales with the input height, clamped for touch targets
+      const size = Math.max(22, Math.min(28, rect.height - 8));
+      const inset = 4;
+      const top = rect.top + (rect.height - size) / 2;
+      const left = rect.right - size - inset;
+
+      const btn = this.triggerBtn;
+      btn.style.display = 'inline-flex';
+      btn.style.top = top + 'px';
+      btn.style.left = left + 'px';
+      btn.style.width = size + 'px';
+      btn.style.height = size + 'px';
+    }
+
+    _destroyTriggerButton() {
+      if (this.triggerBtn) {
+        this.triggerBtn.remove();
+        this.triggerBtn = null;
+      }
+      if (this._triggerStyleEl) {
+        this._triggerStyleEl.remove();
+        this._triggerStyleEl = null;
+      }
+      if (this.targetInput && this._originalPaddingRight !== null) {
+        this.targetInput.style.paddingRight = this._originalPaddingRight;
+        this._originalPaddingRight = null;
+      }
+    }
+
+    // ============================================================
+    // 5d. POPUP CONTROL
     // ============================================================
     show() {
       if (!this._isPopup) return;
@@ -444,37 +672,90 @@
 
       this._isVisible = true;
       this.popupContainer.style.display = 'block';
+      this.targetInput.setAttribute('aria-expanded', 'true');
+      if (this.triggerBtn) {
+        this.triggerBtn.setAttribute('aria-expanded', 'true');
+        this.triggerBtn.style.display = 'none';
+      }
       this._positionPopup();
-      const firstInput = this.popupContainer.querySelector('.db-qty');
-      if (firstInput) setTimeout(() => firstInput.focus(), 50);
       this._updateOutput();
+      this._emitValidation();
+
+      // Ensure the height is right after layout, without animating on first open
+      const inner = this.popupContainer.querySelector('.db-flip-inner');
+      if (inner) {
+        if (!this._initialHeightSet) {
+          // Suppress the height transition for the very first paint
+          const prevTransition = inner.style.transition;
+          inner.style.transition = 'none';
+          void this.popupContainer.offsetHeight;
+          this._syncFlipHeight();
+          void inner.offsetHeight;
+          inner.style.transition = prevTransition || '';
+          this._initialHeightSet = true;
+        } else {
+          void this.popupContainer.offsetHeight;
+          this._syncFlipHeight();
+        }
+      }
+
+      // And again after paint, in case fonts / SVGs changed layout
+      requestAnimationFrame(() => this._syncFlipHeight());
     }
 
     hide(accept = false) {
       if (!this._isPopup) return;
-      this._isVisible = false;
-      this.popupContainer.style.display = 'none';
+
       if (accept) {
-        const notation = this.getNotation();
-        const validation = this._validateNotation(notation);
-        if (!validation.valid) {
-          this._handleError(new Error(validation.message || 'Invalid notation'));
+        // Validate BEFORE hiding. If it fails, keep the popup open and
+        // surface errors inline so the user actually sees them.
+        const result = this.validate();
+        if (!result.valid) {
+          this._showInlineErrors(result.errors);
+          this._emitValidation();
+          // Ensure the popup stays visible
           this._isVisible = true;
           this.popupContainer.style.display = 'block';
+          this.targetInput.setAttribute('aria-expanded', 'true');
+          if (this.triggerBtn) this.triggerBtn.style.display = 'none';
+          this._syncFlipHeight();
           return;
         }
-        this.targetInput.value = notation;
-        this._lastInputValue = notation;
+
+        // Valid — commit and close
+        this._clearInlineErrors();
+        this._isVisible = false;
+        this.popupContainer.style.display = 'none';
+        this.targetInput.setAttribute('aria-expanded', 'false');
+        if (this.triggerBtn) this.triggerBtn.setAttribute('aria-expanded', 'false');
+
+        this.targetInput.value = result.notation;
+        this._lastInputValue = result.notation;
         this.targetInput.dispatchEvent(new Event('input', { bubbles: true }));
         this.targetInput.dispatchEvent(new Event('change', { bubbles: true }));
-        safeCall(this.config.callbacks.onAccept, notation, this.groups);
+        safeCall(this.config.callbacks.onAccept, result.notation, this.groups);
       } else {
+        // Cancel — just close
+        this._isVisible = false;
+        this.popupContainer.style.display = 'none';
+        this.targetInput.setAttribute('aria-expanded', 'false');
+        if (this.triggerBtn) this.triggerBtn.setAttribute('aria-expanded', 'false');
+        this._clearInlineErrors();
         safeCall(this.config.callbacks.onClose);
       }
+
+      // Restore focus if it was inside the popup
+      if (document.activeElement && this.popupContainer.contains(document.activeElement)) {
+        this._suppressFocus = true;
+        try { this.targetInput.focus({ preventScroll: true }); } catch (_) {}
+        setTimeout(() => { this._suppressFocus = false; }, 150);
+      }
+
+      this._positionTrigger();
     }
 
     // ============================================================
-    // 5d. NOTATION OPERATIONS
+    // 5e. NOTATION OPERATIONS
     // ============================================================
     getNotation() {
       const validGroups = this.groups.filter(g => this._isGroupValid(g));
@@ -495,6 +776,7 @@
       this._renderGroups();
       this._updateOutput();
       this._triggerChange('onClear');
+      this._emitValidation();
       return this;
     }
 
@@ -511,6 +793,7 @@
       this._renderGroups();
       this._updateOutput();
       this._triggerChange('onGroupAdd', group);
+      this._emitValidation();
       return this;
     }
 
@@ -520,21 +803,291 @@
         this._renderGroups();
         this._updateOutput();
         this._triggerChange('onGroupRemove', removed);
+        this._emitValidation();
       }
       return this;
     }
 
     // ============================================================
-    // 5e. HELP PANEL
+    // 5f. VALIDATION API (external use)
+    // ============================================================
+
+    /**
+     * Validate the current builder state.
+     * @returns {{ valid: boolean, notation: string, errors: Array }}
+     *  Each error: { field, message, groupId?, groupIndex?, ruleIndex?, ruleId? }
+     */
+    validate() {
+      const notation = this.getNotation();
+      const errors = [];
+      this._validateGroups(this.groups, errors);
+      this._validateCustom(notation, errors, this.groups);
+      if (this.groups.length === 0) {
+        errors.push({ field: 'notation', message: 'No groups defined' });
+      } else if (!notation) {
+        errors.push({ field: 'notation', message: 'Notation is empty' });
+      }
+      return { valid: errors.length === 0, notation, errors };
+    }
+
+    /**
+     * Validate an arbitrary notation string without touching current state.
+     * @returns {{ valid: boolean, notation: string, errors: Array }}
+     */
+    validateNotation(str) {
+      const notation = (str || '').trim();
+      const groups = this._parseToGroups(notation);
+      const errors = [];
+      this._validateGroups(groups, errors);
+      this._validateCustom(notation, errors, groups);
+      if (groups.length === 0) {
+        errors.push({ field: 'notation', message: 'Notation is empty or could not be parsed' });
+      }
+      return { valid: errors.length === 0, notation, errors };
+    }
+
+    /** Quick boolean shortcut. */
+    isValid() { return this.validate().valid; }
+
+    // -- Internal validation helpers --
+
+    _validateGroups(groups, errors) {
+      groups.forEach((g, i) => {
+        const dieMax = parseInt((g.dieType || 'd6').replace('d', '')) || 6;
+
+        if (!g.quantity || g.quantity < 1) {
+          errors.push({ field: 'quantity', groupId: g.id, groupIndex: i,
+            message: 'Quantity must be at least 1' });
+        } else if (g.quantity > 100) {
+          errors.push({ field: 'quantity', groupId: g.id, groupIndex: i,
+            message: 'Quantity cannot exceed 100' });
+        }
+        if (!g.dieType) {
+          errors.push({ field: 'dieType', groupId: g.id, groupIndex: i,
+            message: 'Die type is required' });
+        }
+
+        (g.rules || []).forEach((ruleEntry, ruleIdx) => {
+          const ruleObj = RULE_DEFS[ruleEntry.id] || RULE_DEFS.none;
+          if (ruleEntry.id === 'none') return;
+
+          if (ruleObj.needsModifier) {
+            let max = ruleObj.modifierMax;
+            if (max === 'quantity') max = g.quantity;
+            if (max === 'quantityMinus1') max = Math.max(1, g.quantity - 1);
+            const min = ruleObj.modifierMin || 1;
+            if (!ruleEntry.ruleModifier || ruleEntry.ruleModifier < min) {
+              errors.push({ field: 'ruleModifier', groupId: g.id, groupIndex: i,
+                ruleIndex: ruleIdx, ruleId: ruleEntry.id,
+                message: `${ruleObj.label}: amount must be at least ${min}` });
+            } else if (max && ruleEntry.ruleModifier > max) {
+              errors.push({ field: 'ruleModifier', groupId: g.id, groupIndex: i,
+                ruleIndex: ruleIdx, ruleId: ruleEntry.id,
+                message: `${ruleObj.label}: amount cannot exceed ${max}` });
+            }
+          }
+          if (ruleObj.needsLimit) {
+            const min = ruleObj.limitMin || 1;
+            if (!ruleEntry.limitValue || ruleEntry.limitValue < min) {
+              errors.push({ field: 'limitValue', groupId: g.id, groupIndex: i,
+                ruleIndex: ruleIdx, ruleId: ruleEntry.id,
+                message: `${ruleObj.label}: trigger must be at least ${min}` });
+            } else if (ruleEntry.limitValue > dieMax) {
+              errors.push({ field: 'limitValue', groupId: g.id, groupIndex: i,
+                ruleIndex: ruleIdx, ruleId: ruleEntry.id,
+                message: `${ruleObj.label}: trigger cannot exceed ${dieMax} (die maximum)` });
+            }
+          }
+        });
+      });
+    }
+
+    _validateCustom(notation, errors, groups) {
+      if (!this.config.validator || typeof this.config.validator !== 'function') return;
+      try {
+        const result = this.config.validator(notation, groups);
+        if (typeof result === 'string') {
+          errors.push({ field: 'custom', message: result });
+        } else if (result === false) {
+          errors.push({ field: 'custom', message: 'Invalid notation' });
+        }
+      } catch (e) {
+        errors.push({ field: 'custom', message: e.message });
+      }
+    }
+
+    _emitValidation() {
+      if (this.config.callbacks.onValidate) {
+        safeCall(this.config.callbacks.onValidate, this.validate());
+      }
+    }
+
+    _showInlineErrors(errors) {
+      const container = this._isPopup ? this.popupContainer : this.container;
+      if (!container) return;
+
+      // Clear any existing inline error decoration first
+      this._clearInlineErrors();
+
+      // Track which groups have errors so we can render a banner per group
+      const errorsByGroupId = {};
+      const globalErrors = [];
+      for (const err of errors) {
+        if (err.groupId) {
+          if (!errorsByGroupId[err.groupId]) errorsByGroupId[err.groupId] = [];
+          errorsByGroupId[err.groupId].push(err);
+        } else {
+          globalErrors.push(err);
+        }
+      }
+
+      // The form being edited may not have an id yet (new group).
+      // Match by index when needed.
+      const form = container.querySelector('.db-form');
+      const activeGroupId = form?.dataset.groupId;
+
+      // Banner in the current form
+      if (form) {
+        const relevant =
+          (activeGroupId && errorsByGroupId[activeGroupId]) || globalErrors;
+        const toShow = relevant && relevant.length ? relevant : errors.slice(0, 1);
+        if (toShow.length) {
+          const banner = document.createElement('div');
+          banner.className = 'db-form-error-banner';
+          banner.setAttribute('role', 'alert');
+          banner.innerHTML = toShow
+            .map(e => `<div>${this._escapeHtml(e.message)}</div>`)
+            .join('');
+          // Insert at the top of the form, spanning all columns
+          form.insertBefore(banner, form.firstChild);
+        }
+
+        // Per-field highlighting
+        for (const err of errors) {
+          if (!err.field || err.field === 'notation' || err.field === 'custom') continue;
+          const selector = err.field === 'ruleModifier'
+            ? `.db-rule-mod[data-rule-idx="${err.ruleIndex}"]`
+            : err.field === 'limitValue'
+              ? `.db-limit-val[data-rule-idx="${err.ruleIndex}"]`
+              : err.field === 'quantity'
+                ? `.db-qty`
+                : err.field === 'dieType'
+                  ? `.db-die-type`
+                  : null;
+          if (!selector) continue;
+          const el = form.querySelector(selector);
+          if (el) el.classList.add('db-input-error');
+        }
+      }
+    }
+
+    _clearInlineErrors() {
+      const container = this._isPopup ? this.popupContainer : this.container;
+      if (!container) return;
+      container.querySelectorAll('.db-form-error-banner').forEach(el => el.remove());
+      container.querySelectorAll('.db-input-error').forEach(el => el.classList.remove('db-input-error'));
+    }
+
+    _escapeHtml(str) {
+      return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+
+    // ============================================================
+    // 5g. HELP / FLIP
     // ============================================================
     toggleHelp() {
-      this._helpVisible = !this._helpVisible;
-      const container = this._isPopup ? this.popupContainer : this.container;
-      const panel = container.querySelector('.db-help-panel');
-      if (panel) {
-        panel.style.display = this._helpVisible ? 'block' : 'none';
-        if (this._helpVisible) this._populateHelp(container);
+      if (this._isPopup) {
+        this._flipTo(!this._helpVisible);
+      } else {
+        this._helpVisible = !this._helpVisible;
+        const container = this.container;
+        const panel = container.querySelector('.db-help-panel');
+        if (panel) {
+          panel.style.display = this._helpVisible ? 'block' : 'none';
+          if (this._helpVisible) this._populateHelp(container);
+        }
+        const helpBtn = container.querySelector('#db-help-btn');
+        if (helpBtn) helpBtn.setAttribute('aria-expanded', this._helpVisible ? 'true' : 'false');
       }
+    }
+
+    _flipTo(showBack) {
+      const inner = this.popupContainer.querySelector('.db-flip-inner');
+      if (!inner) return;
+
+      const front = inner.querySelector('.db-flip-front');
+      const back = inner.querySelector('.db-flip-back');
+      if (!front || !back) return;
+
+      this._helpVisible = showBack;
+      inner.setAttribute('data-flipped', showBack ? 'true' : 'false');
+
+      if (showBack) {
+        front.setAttribute('inert', '');
+        front.setAttribute('aria-hidden', 'true');
+        back.removeAttribute('inert');
+        back.removeAttribute('aria-hidden');
+      } else {
+        back.setAttribute('inert', '');
+        back.setAttribute('aria-hidden', 'true');
+        front.removeAttribute('inert');
+        front.removeAttribute('aria-hidden');
+      }
+
+      const helpBtn = this.popupContainer.querySelector('#db-help-btn');
+      if (helpBtn) helpBtn.setAttribute('aria-expanded', showBack ? 'true' : 'false');
+
+      this._syncFlipHeight();
+
+      setTimeout(() => {
+        const targetFace = showBack ? back : front;
+        const focusable = targetFace.querySelector(
+          'button:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])'
+        );
+        if (focusable) focusable.focus();
+      }, 320);
+    }
+
+    _syncFlipHeight() {
+      if (!this._isPopup || !this.popupContainer) return;
+      if (this.popupContainer.style.display === 'none') return;
+
+      const inner = this.popupContainer.querySelector('.db-flip-inner');
+      if (!inner) return;
+
+      const active = inner.querySelector(this._helpVisible ? '.db-flip-back' : '.db-flip-front');
+      if (!active) return;
+
+      // Force reflow before measuring so we always get current layout
+      void active.offsetHeight;
+
+      const h = active.offsetHeight;
+      if (h > 0) {
+        inner.style.height = h + 'px';
+      }
+    }
+
+    _bindFaceResizeObserver() {
+      if (typeof ResizeObserver === 'undefined') return;
+      if (!this.popupContainer) return;
+
+      const inner = this.popupContainer.querySelector('.db-flip-inner');
+      if (!inner) return;
+
+      const front = inner.querySelector('.db-flip-front');
+      const back = inner.querySelector('.db-flip-back');
+      if (!front || !back) return;
+
+      if (this._faceResizeObserver) this._faceResizeObserver.disconnect();
+
+      this._faceResizeObserver = new ResizeObserver(() => this._syncFlipHeight());
+      this._faceResizeObserver.observe(front);
+      this._faceResizeObserver.observe(back);
     }
 
     _populateHelp(container) {
@@ -561,47 +1114,58 @@
     }
 
     // ============================================================
-    // 5f. ERROR HANDLING
+    // 5h. FOCUS TRAP
     // ============================================================
+    _bindFocusTrap() {
+      this._focusTrapHandler = (e) => {
+        if (e.key !== 'Tab' || !this._isVisible || !this._isPopup) return;
+        if (this._clickingInside) return;
+
+        const popupFocusables = Array.from(
+          this.popupContainer.querySelectorAll(
+            'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+          )
+        ).filter(el => el.offsetParent !== null && !el.closest('[inert]'));
+
+        const cycle = [this.targetInput, ...popupFocusables];
+        const idx = cycle.indexOf(document.activeElement);
+        if (idx === -1) return;
+
+        const next = e.shiftKey
+          ? cycle[(idx - 1 + cycle.length) % cycle.length]
+          : cycle[(idx + 1) % cycle.length];
+
+        e.preventDefault();
+        next.focus();
+      };
+      document.addEventListener('keydown', this._focusTrapHandler);
+    }
+
+    // ============================================================
+    // 5i. ERROR HANDLING
+    // ============================================================
+
+    // Reserved for unexpected runtime errors (missing container, bad config).
+    // Validation failures should go through _showInlineErrors().
     _handleError(error) {
       this._error = error;
       safeCall(this.config.callbacks.onError, error);
       console.error('[DieBuilder]', error);
     }
 
-    _validateNotation(notation) {
-      if (this.config.validator && typeof this.config.validator === 'function') {
-        try {
-          const result = this.config.validator(notation);
-          if (typeof result === 'string') return { valid: false, message: result };
-          if (result === false) return { valid: false, message: 'Invalid notation' };
-          return { valid: true };
-        } catch (e) {
-          return { valid: false, message: e.message };
-        }
-      }
-      if (!notation || notation.trim() === '') {
-        return { valid: false, message: 'Notation is empty' };
-      }
-      for (const g of this.groups) {
-        if (!this._isGroupValid(g)) {
-          return { valid: false, message: `Group "${g.id}" is invalid` };
-        }
-      }
-      return { valid: true };
-    }
-
     // ============================================================
-    // 5g. INTERNAL RENDER METHODS
+    // 5j. INTERNAL RENDER
     // ============================================================
     _renderStandalone() {
       this.container.innerHTML = this._buildHTML(false);
       this._applyStyles(false);
+      this._populateHelp(this.container);
     }
 
     _renderPopup() {
       this.popupContainer.innerHTML = this._buildHTML(true);
       this._applyStyles(true);
+      this._populateHelp(this.popupContainer);
     }
 
     _refreshForm() {
@@ -612,55 +1176,133 @@
       this._bindFormEvents();
       this._renderGroups();
       this._updateOutput();
+      this._syncFlipHeight();
     }
 
     _buildHTML(isPopup) {
       const { labels, features } = this.config;
-      const closeBtn = isPopup ? `<button class="db-close-btn" id="db-close-btn" aria-label="Close">✕</button>` : '';
-      const acceptBtn = isPopup ? `<button class="db-accept-btn" id="db-accept-btn">${labels.accept}</button>` : '';
-      const helpBtn = `<button class="db-help-btn" id="db-help-btn" title="${labels.help}" aria-label="${labels.help}">?</button>`;
-      const manual = features.allowManual && !isPopup ? `
-        <div class="db-manual">
-          <input type="text" id="db-manual-input" placeholder="${labels.manualPlaceholder}" />
-          <button id="db-manual-apply">${labels.apply}</button>
-        </div>
-      ` : '';
+      const titleId = this._instanceId + '-title';
+      const titleIdBack = this._instanceId + '-title-back';
+
+      if (!isPopup) {
+        const manual = features.allowManual ? `
+          <div class="db-manual">
+            <input type="text" id="db-manual-input" placeholder="${labels.manualPlaceholder}" aria-label="${labels.manualPlaceholder}" />
+            <button id="db-manual-apply" type="button">${labels.apply}</button>
+          </div>
+        ` : '';
+
+        return `
+          <div class="die-builder" data-theme="${this.config.theme.mode}">
+            <div class="db-header">
+              <h3>${labels.title}</h3>
+              <div class="db-header-actions">
+                <button class="db-help-btn" id="db-help-btn" type="button"
+                        title="${labels.help}" aria-label="${labels.help}"
+                        aria-expanded="false" aria-controls="db-help-panel">
+                  <span aria-hidden="true">?</span>
+                </button>
+              </div>
+            </div>
+            ${manual}
+            <div class="db-help-panel" id="db-help-panel" style="display:none;" role="region" aria-label="${labels.glossaryTitle}">
+              <div class="db-help-header">
+                <span>${labels.glossaryTitle}</span>
+                <button class="db-help-close" id="db-help-close" type="button">${labels.glossaryClose}</button>
+              </div>
+              <div class="db-help-content"></div>
+            </div>
+            <div class="db-group-builder" id="db-group-builder">${this._renderGroupForm()}</div>
+            <div class="db-groups-header">
+              <span id="${this._instanceId}-groups-label">Groups</span>
+              <span class="db-groups-count" aria-hidden="true">${this.groups.length}</span>
+            </div>
+            <div class="db-groups" id="db-groups-list" role="list" aria-labelledby="${this._instanceId}-groups-label">
+              <div class="db-empty">${labels.noGroups}</div>
+            </div>
+            <div class="db-footer">
+              ${features.showPreview ? `
+                <span class="db-preview">${labels.notation}
+                  <strong id="db-preview-text" aria-live="polite" aria-atomic="true">—</strong>
+                </span>
+              ` : ''}
+              <div class="db-actions">
+                <button class="db-clear-btn" id="db-clear-btn" type="button">${labels.clearAll}</button>
+                <button class="db-copy-btn" id="db-copy-btn" type="button">${labels.copy}</button>
+              </div>
+            </div>
+          </div>
+        `;
+      }
+
+      const acceptBtn = `<button class="db-accept-btn" id="db-accept-btn" type="button">${labels.accept}</button>`;
 
       return `
         <div class="die-builder" data-theme="${this.config.theme.mode}">
-          <div class="db-header">
-            <h3>${labels.title}</h3>
-            <div class="db-header-actions">
-              ${helpBtn}
-              ${closeBtn}
-            </div>
-          </div>
-          ${manual}
-          <div class="db-help-panel" style="display:none;">
-            <div class="db-help-header">
-              <span>${labels.glossaryTitle}</span>
-              <button class="db-help-close" id="db-help-close">${labels.glossaryClose}</button>
-            </div>
-            <div class="db-help-content"></div>
-          </div>
-          <div class="db-group-builder" id="db-group-builder">
-            ${this._renderGroupForm()}
-          </div>
-          <div class="db-groups-header">
-            <span>Groups</span>
-            <span class="db-groups-count">${this.groups.length}</span>
-          </div>
-          <div class="db-groups" id="db-groups-list">
-            <div class="db-empty">${labels.noGroups}</div>
-          </div>
-          <div class="db-footer">
-            ${features.showPreview ? `
-              <span class="db-preview">${labels.notation} <strong id="db-preview-text">—</strong></span>
-            ` : ''}
-            <div class="db-actions">
-              <button class="db-clear-btn" id="db-clear-btn">${labels.clearAll}</button>
-              <button class="db-copy-btn" id="db-copy-btn">${labels.copy}</button>
-              ${acceptBtn}
+          <div class="db-flip-container">
+            <div class="db-flip-inner" data-flipped="false">
+
+              <div class="db-flip-face db-flip-front">
+                <div class="db-face-card">
+                  <div class="db-face-content">
+                    <div class="db-header">
+                      <h3 id="${titleId}">${labels.title}</h3>
+                      <div class="db-header-actions">
+                        <button class="db-help-btn" id="db-help-btn" type="button"
+                                title="${labels.help}" aria-label="${labels.help}" aria-expanded="false">
+                          <span aria-hidden="true">?</span>
+                        </button>
+                        <button class="db-close-btn" id="db-close-btn" type="button"
+                                title="${labels.close}" aria-label="${labels.close}">
+                          <span aria-hidden="true">✕</span>
+                        </button>
+                      </div>
+                    </div>
+                    <div class="db-group-builder" id="db-group-builder">${this._renderGroupForm()}</div>
+                    <div class="db-groups-header">
+                      <span id="${this._instanceId}-groups-label">Groups</span>
+                      <span class="db-groups-count" aria-hidden="true">${this.groups.length}</span>
+                    </div>
+                    <div class="db-groups" id="db-groups-list" role="list" aria-labelledby="${this._instanceId}-groups-label">
+                      <div class="db-empty">${labels.noGroups}</div>
+                    </div>
+                    <div class="db-footer">
+                      ${features.showPreview ? `
+                        <span class="db-preview">${labels.notation}
+                          <strong id="db-preview-text" aria-live="polite" aria-atomic="true">—</strong>
+                        </span>
+                      ` : ''}
+                      <div class="db-actions">
+                        <button class="db-clear-btn" id="db-clear-btn" type="button">${labels.clearAll}</button>
+                        <button class="db-copy-btn" id="db-copy-btn" type="button">${labels.copy}</button>
+                        ${acceptBtn}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="db-flip-face db-flip-back" inert aria-hidden="true">
+                <div class="db-face-card">
+                  <div class="db-face-content">
+                    <div class="db-header">
+                      <h3 id="${titleIdBack}">${labels.glossaryTitle}</h3>
+                      <div class="db-header-actions">
+                        <button class="db-back-btn" id="db-back-btn" type="button"
+                                title="${labels.backToBuilder}" aria-label="${labels.backToBuilder}">
+                          <span aria-hidden="true">←</span>
+                        </button>
+                        <button class="db-close-btn" id="db-close-btn-back" type="button"
+                                title="${labels.close}" aria-label="${labels.close}">
+                          <span aria-hidden="true">✕</span>
+                        </button>
+                      </div>
+                    </div>
+                    <div class="db-help-content" id="db-help-content"></div>
+                  </div>
+                </div>
+              </div>
+
             </div>
           </div>
         </div>
@@ -677,22 +1319,22 @@
       const rulesArray = g.rules || [{ id: 'none', ruleModifier: 1, limitOperator: '=', limitValue: 1 }];
       rulesArray.forEach((ruleEntry, idx) => {
         ruleEntries += `
-          <div class="db-rule-entry" data-rule-index="${idx}">
+          <div class="db-rule-entry" data-rule-index="${idx}" role="group" aria-label="Rule ${idx + 1}">
             <div class="db-rule-fields">
-              <select class="db-rule-selector" data-rule-idx="${idx}">
+              <select class="db-rule-selector" data-rule-idx="${idx}" aria-label="Rule type">
                 ${Object.entries(categorizedRules).map(([cat, rules]) => `
                   <optgroup label="${RULE_CATEGORIES[cat]?.label || cat}">
-                    ${rules.map(r => `
-                      <option value="${r.id}" ${ruleEntry.id === r.id ? 'selected' : ''}>
-                        ${r.label}
-                      </option>
-                    `).join('')}
+                    ${rules.map(r => `<option value="${r.id}" ${ruleEntry.id === r.id ? 'selected' : ''}>${r.label}</option>`).join('')}
                   </optgroup>
                 `).join('')}
               </select>
               ${this._renderRuleModifiers(ruleEntry, g, idx)}
             </div>
-            ${rulesArray.length > 1 ? `<button class="db-rule-remove" data-rule-idx="${idx}" aria-label="Remove rule">✕</button>` : ''}
+            ${rulesArray.length > 1 ? `
+              <button class="db-rule-remove" data-rule-idx="${idx}" type="button"
+                      title="${labels.removeRule}" aria-label="${labels.removeRule} rule ${idx + 1}">
+                <span aria-hidden="true">✕</span>
+              </button>` : ''}
           </div>
         `;
       });
@@ -700,34 +1342,34 @@
       return `
         <div class="db-form" data-group-id="${g.id || 'new'}">
           <div class="db-col db-col-base">
-            <label>${labels.baseDie}</label>
+            <label for="${this._instanceId}-qty-${g.id || 'new'}">${labels.baseDie}</label>
             <div class="db-field">
-              <input type="number" class="db-qty" value="${g.quantity || 1}" min="1" max="100" />
-              <select class="db-die-type">
-                ${this.config.dieTypes.map(d => 
-                  `<option value="${d}" ${g.dieType === d ? 'selected' : ''}>${d}</option>`
-                ).join('')}
+              <input type="number" id="${this._instanceId}-qty-${g.id || 'new'}"
+                     class="db-qty" value="${g.quantity || 1}" min="1" max="100" aria-label="Quantity" />
+              <select class="db-die-type" aria-label="Die type">
+                ${this.config.dieTypes.map(d => `<option value="${d}" ${g.dieType === d ? 'selected' : ''}>${d}</option>`).join('')}
               </select>
             </div>
           </div>
 
           <div class="db-col db-col-rules">
-            <label>${labels.rule}</label>
-            <div class="db-rules-container">
+            <span class="db-col-label" id="${this._instanceId}-rules-label">${labels.rule}</span>
+            <div class="db-rules-container" role="group" aria-labelledby="${this._instanceId}-rules-label">
               ${ruleEntries}
-              <button class="db-add-rule-btn">+ ${labels.addRule}</button>
+              <button class="db-add-rule-btn" type="button">+ ${labels.addRule}</button>
             </div>
           </div>
 
           <div class="db-col db-col-bonus">
-            <label>${labels.bonus}</label>
+            <label for="${this._instanceId}-bonus-${g.id || 'new'}">${labels.bonus}</label>
             <div class="db-field">
-              <input type="number" class="db-bonus" value="${g.bonus || 0}" step="1" />
+              <input type="number" id="${this._instanceId}-bonus-${g.id || 'new'}"
+                     class="db-bonus" value="${g.bonus || 0}" step="1" aria-label="Bonus modifier" />
             </div>
           </div>
 
           <div class="db-col db-col-actions">
-            <button class="db-add-btn">${isEdit ? labels.updateGroup : labels.addGroup}</button>
+            <button class="db-add-btn" type="button">${isEdit ? labels.updateGroup : labels.addGroup}</button>
           </div>
         </div>
       `;
@@ -742,27 +1384,23 @@
         if (max === 'quantityMinus1') max = Math.max(1, group.quantity - 1);
         const val = ruleEntry.ruleModifier || ruleObj.modifierMin || 1;
         html += `
-          <input type="number" class="db-rule-mod" data-rule-idx="${idx}" 
-                 value="${val}" min="${ruleObj.modifierMin || 1}" max="${max || 100}" />
+          <input type="number" class="db-rule-mod" data-rule-idx="${idx}"
+                 value="${val}" min="${ruleObj.modifierMin || 1}" max="${max || 100}" aria-label="Amount" />
         `;
       }
       if (ruleObj.needsLimit) {
         const dieMax = parseInt(group.dieType.replace('d', ''));
         const min = ruleObj.limitMin || 1;
-        const currentVal = (ruleEntry.limitValue && ruleEntry.limitValue > 0)
-          ? ruleEntry.limitValue
-          : dieMax;
+        const currentVal = (ruleEntry.limitValue && ruleEntry.limitValue > 0) ? ruleEntry.limitValue : dieMax;
         html += `
-          <select class="db-limit-op" data-rule-idx="${idx}">
-            ${this.config.comparisonOps.map(op => 
-              `<option value="${op}" ${ruleEntry.limitOperator === op ? 'selected' : ''}>${op}</option>`
-            ).join('')}
+          <select class="db-limit-op" data-rule-idx="${idx}" aria-label="Trigger comparison">
+            ${this.config.comparisonOps.map(op => `<option value="${op}" ${ruleEntry.limitOperator === op ? 'selected' : ''}>${op}</option>`).join('')}
           </select>
-          <input type="number" class="db-limit-val" data-rule-idx="${idx}" 
-                 value="${currentVal}" min="${min}" max="${dieMax}" />
+          <input type="number" class="db-limit-val" data-rule-idx="${idx}"
+                 value="${currentVal}" min="${min}" max="${dieMax}" aria-label="Trigger value" />
         `;
       }
-      return html || `<span class="db-no-mod">—</span>`;
+      return html || `<span class="db-no-mod" aria-hidden="true">—</span>`;
     }
 
     _renderGroups() {
@@ -783,14 +1421,18 @@
         const notation = valid ? this._buildGroupNotation(g) : 'Invalid';
         const rulesStr = g.rules.map(r => RULE_DEFS[r.id]?.label || r.id).join(' · ');
         return `
-          <div class="db-group-item ${valid ? '' : 'invalid'}" data-index="${index}">
+          <div class="db-group-item ${valid ? '' : 'invalid'}" data-index="${index}" role="listitem">
             <div class="db-group-info">
               <span class="db-group-notation">${notation}</span>
               <span class="db-group-desc">${rulesStr}</span>
             </div>
             <div class="db-group-actions">
-              <button class="db-edit-btn" data-index="${index}" aria-label="Edit">✎</button>
-              <button class="db-remove-btn" data-index="${index}" aria-label="Remove">✕</button>
+              <button class="db-edit-btn" data-index="${index}" type="button" aria-label="Edit group ${index + 1}">
+                <span aria-hidden="true">✎</span>
+              </button>
+              <button class="db-remove-btn" data-index="${index}" type="button" aria-label="Remove group ${index + 1}">
+                <span aria-hidden="true">✕</span>
+              </button>
             </div>
           </div>
         `;
@@ -803,17 +1445,16 @@
         if (!categorized[rule.category]) categorized[rule.category] = [];
         categorized[rule.category].push(rule);
       }
-      // Sort category groups by order
-      const sortedCategories = Object.keys(categorized).sort((a, b) => {
-        return (RULE_CATEGORIES[a]?.order ?? 99) - (RULE_CATEGORIES[b]?.order ?? 99);
-      });
+      const sorted = Object.keys(categorized).sort((a, b) =>
+        (RULE_CATEGORIES[a]?.order ?? 99) - (RULE_CATEGORIES[b]?.order ?? 99)
+      );
       const result = {};
-      for (const cat of sortedCategories) result[cat] = categorized[cat];
+      for (const cat of sorted) result[cat] = categorized[cat];
       return result;
     }
 
     // ============================================================
-    // 5h. EVENT BINDING
+    // 5k. EVENT BINDING
     // ============================================================
     _bindCommonEvents() {
       const container = this._isPopup ? this.popupContainer : this.container;
@@ -822,9 +1463,7 @@
       const manualInput = container.querySelector('#db-manual-input');
       const manualApply = container.querySelector('#db-manual-apply');
       if (manualApply && manualInput) {
-        manualApply.addEventListener('click', () => {
-          if (manualInput.value) this.setNotation(manualInput.value);
-        });
+        manualApply.addEventListener('click', () => { if (manualInput.value) this.setNotation(manualInput.value); });
         manualInput.addEventListener('keydown', (e) => {
           if (e.key === 'Enter' && manualInput.value) this.setNotation(manualInput.value);
         });
@@ -843,12 +1482,12 @@
               copyBtn.textContent = this.config.labels.copied;
               setTimeout(() => copyBtn.textContent = orig, 2000);
             }).catch(() => {
-              const textarea = document.createElement('textarea');
-              textarea.value = notation;
-              document.body.appendChild(textarea);
-              textarea.select();
+              const ta = document.createElement('textarea');
+              ta.value = notation;
+              document.body.appendChild(ta);
+              ta.select();
               document.execCommand('copy');
-              textarea.remove();
+              ta.remove();
             });
           }
         });
@@ -857,12 +1496,17 @@
       const helpBtn = container.querySelector('#db-help-btn');
       if (helpBtn) helpBtn.addEventListener('click', () => this.toggleHelp());
 
+      const backBtn = container.querySelector('#db-back-btn');
+      if (backBtn) backBtn.addEventListener('click', () => this._flipTo(false));
+
       const helpClose = container.querySelector('#db-help-close');
       if (helpClose) {
         helpClose.addEventListener('click', () => {
           this._helpVisible = false;
           const panel = container.querySelector('.db-help-panel');
           if (panel) panel.style.display = 'none';
+          const btn = container.querySelector('#db-help-btn');
+          if (btn) btn.setAttribute('aria-expanded', 'false');
         });
       }
 
@@ -870,10 +1514,7 @@
       if (groupsList) {
         groupsList.addEventListener('click', (e) => {
           const removeBtn = e.target.closest('.db-remove-btn');
-          if (removeBtn) {
-            const index = parseInt(removeBtn.dataset.index);
-            this.removeGroup(index);
-          }
+          if (removeBtn) this.removeGroup(parseInt(removeBtn.dataset.index));
           const editBtn = e.target.closest('.db-edit-btn');
           if (editBtn) {
             const index = parseInt(editBtn.dataset.index);
@@ -881,8 +1522,7 @@
             const builder = container.querySelector('#db-group-builder');
             builder.innerHTML = this._renderGroupForm(group);
             this._bindFormEvents();
-            this.groups.splice(index, 1);
-            this._renderGroups();
+            this._syncFlipHeight();
           }
         });
       }
@@ -897,10 +1537,7 @@
             const editId = form.dataset.groupId;
             if (editId && editId !== 'new') {
               const index = this.groups.findIndex(g => g.id === editId);
-              if (index !== -1) {
-                group.id = editId;
-                this.groups[index] = group;
-              }
+              if (index !== -1) { group.id = editId; this.groups[index] = group; }
             } else {
               group.id = `g${++this.groupCounter}`;
               this.groups.push(group);
@@ -910,6 +1547,8 @@
             this._renderGroups();
             this._updateOutput();
             this._triggerChange('onGroupAdd', group);
+            this._emitValidation();
+            this._syncFlipHeight();
           }
         });
 
@@ -920,10 +1559,9 @@
             const group = this._collectFormData(form);
             if (!group.rules) group.rules = [];
             group.rules.push({ id: 'none', ruleModifier: 1, limitOperator: '=', limitValue: 1 });
-            const newForm = this._renderGroupForm(group);
-            const builder = form.closest('#db-group-builder');
-            builder.innerHTML = newForm;
+            form.closest('#db-group-builder').innerHTML = this._renderGroupForm(group);
             this._bindFormEvents();
+            this._syncFlipHeight();
           }
         });
 
@@ -935,10 +1573,9 @@
             const group = this._collectFormData(form);
             if (group.rules && group.rules.length > 1) {
               group.rules.splice(idx, 1);
-              const newForm = this._renderGroupForm(group);
-              const builder = form.closest('#db-group-builder');
-              builder.innerHTML = newForm;
+              form.closest('#db-group-builder').innerHTML = this._renderGroupForm(group);
               this._bindFormEvents();
+              this._syncFlipHeight();
             }
           }
         });
@@ -956,27 +1593,32 @@
               group.rules[idx].limitOperator = '=';
               const dieMax = parseInt((group.dieType || 'd6').replace('d','')) || 6;
               group.rules[idx].limitValue = ruleObj.needsLimit ? dieMax : (ruleObj.limitMin || 1);
-              const newForm = this._renderGroupForm(group);
-              const builder = form.closest('#db-group-builder');
-              builder.innerHTML = newForm;
+              form.closest('#db-group-builder').innerHTML = this._renderGroupForm(group);
               this._bindFormEvents();
+              this._syncFlipHeight();
             }
           }
         });
       }
 
       container.addEventListener('input', (e) => {
+        // Clear inline errors as soon as the user starts correcting
+        this._clearInlineErrors();
+
         if (this.config.features.autoValidate) {
           const form = e.target.closest('.db-form');
           if (form) {
             const group = this._collectFormData(form);
             if (this._isGroupValid(group)) {
-              const preview = this._buildGroupNotation(group);
               const previewEl = container.querySelector('#db-preview-text');
-              if (previewEl) previewEl.textContent = preview;
+              if (previewEl) previewEl.textContent = this._buildGroupNotation(group);
             }
           }
         }
+
+        // Debounced validation emit
+        clearTimeout(this._validateDebounce);
+        this._validateDebounce = setTimeout(() => this._emitValidation(), 200);
       });
     }
 
@@ -984,6 +1626,8 @@
       const container = this.popupContainer;
       const closeBtn = container.querySelector('#db-close-btn');
       if (closeBtn) closeBtn.addEventListener('click', () => this.hide(false));
+      const closeBtnBack = container.querySelector('#db-close-btn-back');
+      if (closeBtnBack) closeBtnBack.addEventListener('click', () => this.hide(false));
       const acceptBtn = container.querySelector('#db-accept-btn');
       if (acceptBtn) acceptBtn.addEventListener('click', () => this.hide(true));
     }
@@ -991,13 +1635,11 @@
     _bindFormEvents() {
       const container = this._isPopup ? this.popupContainer : this.container;
       if (!container) return;
-      const qtyInputs = container.querySelectorAll('.db-qty');
-      qtyInputs.forEach(qty => {
+      container.querySelectorAll('.db-qty').forEach(qty => {
         qty.addEventListener('change', () => {
           const form = qty.closest('.db-form');
           const qtyVal = parseInt(qty.value) || 1;
-          const modInputs = form.querySelectorAll('.db-rule-mod');
-          modInputs.forEach(mod => {
+          form.querySelectorAll('.db-rule-mod').forEach(mod => {
             const max = qtyVal - 1;
             mod.max = max;
             if (parseInt(mod.value) > max) mod.value = max;
@@ -1007,7 +1649,7 @@
     }
 
     // ============================================================
-    // 5i. DATA COLLECTION & VALIDATION
+    // 5l. DATA COLLECTION
     // ============================================================
     _collectFormData(form) {
       const qty = parseInt(form.querySelector('.db-qty')?.value) || 1;
@@ -1016,18 +1658,16 @@
       const id = form.dataset.groupId || null;
 
       const rules = [];
-      const ruleSelectors = form.querySelectorAll('.db-rule-selector');
-
-      ruleSelectors.forEach((sel) => {
+      form.querySelectorAll('.db-rule-selector').forEach((sel) => {
         const idx = parseInt(sel.dataset.ruleIdx);
         const ruleModInput = form.querySelector(`.db-rule-mod[data-rule-idx="${idx}"]`);
         const limitOpInput = form.querySelector(`.db-limit-op[data-rule-idx="${idx}"]`);
-        const limitValInput= form.querySelector(`.db-limit-val[data-rule-idx="${idx}"]`);
+        const limitValInput = form.querySelector(`.db-limit-val[data-rule-idx="${idx}"]`);
         rules.push({
           id: sel.value || 'none',
           ruleModifier: ruleModInput ? parseInt(ruleModInput.value) : 1,
           limitOperator: limitOpInput ? limitOpInput.value : '=',
-          limitValue:   limitValInput ? parseInt(limitValInput.value) : 1
+          limitValue: limitValInput ? parseInt(limitValInput.value) : 1
         });
       });
 
@@ -1036,9 +1676,7 @@
 
     _defaultGroup() {
       return {
-        id: null,
-        quantity: 1,
-        dieType: 'd6',
+        id: null, quantity: 1, dieType: 'd6',
         rules: [{ id: 'none', ruleModifier: 1, limitOperator: '=', limitValue: 1 }],
         bonus: 0
       };
@@ -1048,7 +1686,6 @@
       if (!group.quantity || group.quantity < 1) return false;
       if (!group.dieType) return false;
       if (!group.rules || group.rules.length === 0) return false;
-
       for (const ruleEntry of group.rules) {
         const ruleObj = RULE_DEFS[ruleEntry.id] || RULE_DEFS.none;
         if (ruleEntry.id === 'none') continue;
@@ -1077,19 +1714,16 @@
         const notation = ruleObj.notation(group, ruleEntry.ruleModifier, ruleEntry.limitOperator, ruleEntry.limitValue);
         if (notation) parts.push(notation);
       }
-      if (group.bonus) {
-        parts.push(`${group.bonus > 0 ? '+' : ''}${group.bonus}`);
-      }
+      if (group.bonus) parts.push(`${group.bonus > 0 ? '+' : ''}${group.bonus}`);
       return parts.join('');
     }
 
     // ============================================================
-    // 5j. PARSING
+    // 5m. PARSING
     // ============================================================
-    _parseAndSetNotation(notation) {
-      this.groups = [];
-      this.groupCounter = 0;
-      if (!notation || notation.trim() === '') return;
+    _parseToGroups(notation) {
+      const groups = [];
+      if (!notation || notation.trim() === '') return groups;
 
       const rulePatterns = [
         { id: 'keep', regex: /kh(\d+)/ },
@@ -1112,20 +1746,18 @@
 
       let remaining = notation.trim();
       let bonusAccumulator = 0;
+      let counter = 0;
       let safety = 0;
       const MAX_ITER = 300;
 
       while (remaining.length > 0 && safety++ < MAX_ITER) {
         const skip = remaining.match(/^[\s+]+/);
-        if (skip) {
-          remaining = remaining.slice(skip[0].length);
-          if (!remaining) break;
-        }
+        if (skip) { remaining = remaining.slice(skip[0].length); if (!remaining) break; }
 
         const dieMatch = remaining.match(/^(\d+)d(\d+)/);
         if (dieMatch) {
           const group = this._defaultGroup();
-          group.id = `g${++this.groupCounter}`;
+          group.id = `g${++counter}`;
           group.quantity = parseInt(dieMatch[1]);
           group.dieType = `d${dieMatch[2]}`;
           remaining = remaining.slice(dieMatch[0].length);
@@ -1138,10 +1770,9 @@
               const m = remaining.match(pattern.regex);
               if (m && m.index === 0) {
                 const ruleEntry = { id: pattern.id, ruleModifier: 1, limitOperator: '=', limitValue: 1 };
-                if (pattern.id === 'keep' || pattern.id === 'keepLowest' ||
-                    pattern.id === 'dropHighest' || pattern.id === 'dropLowest') {
+                if (['keep','keepLowest','dropHighest','dropLowest'].includes(pattern.id)) {
                   ruleEntry.ruleModifier = parseInt(m[1]);
-                } else if (pattern.id === 'explode' || pattern.id === 'explodeCompounding') {
+                } else if (['explode','explodeCompounding'].includes(pattern.id)) {
                   ruleEntry.limitOperator = m[1] || '=';
                   ruleEntry.limitValue = parseInt(m[2]);
                 } else if (pattern.id === 'reroll') {
@@ -1151,10 +1782,10 @@
                 } else if (pattern.id === 'rerollOnce') {
                   ruleEntry.limitOperator = m[1];
                   ruleEntry.limitValue = parseInt(m[2]);
-                } else if (pattern.id === 'criticalSuccess' || pattern.id === 'criticalFailure') {
+                } else if (['criticalSuccess','criticalFailure'].includes(pattern.id)) {
                   ruleEntry.limitOperator = m[1];
                   ruleEntry.limitValue = parseInt(m[2]);
-                } else if (pattern.id === 'targetNumber' || pattern.id === 'failures') {
+                } else if (['targetNumber','failures'].includes(pattern.id)) {
                   ruleEntry.ruleModifier = parseInt(m[1]);
                 }
                 rules.push(ruleEntry);
@@ -1171,13 +1802,8 @@
             remaining = remaining.slice(bonusMatch[0].length);
           }
 
-          group.rules = rules.length > 0
-            ? rules
-            : [{ id: 'none', ruleModifier: 1, limitOperator: '=', limitValue: 1 }];
-
-          if (this._isGroupValid(group)) {
-            this.groups.push(group);
-          }
+          group.rules = rules.length > 0 ? rules : [{ id: 'none', ruleModifier: 1, limitOperator: '=', limitValue: 1 }];
+          groups.push(group);
           continue;
         }
 
@@ -1191,25 +1817,31 @@
         remaining = remaining.slice(1);
       }
 
-      if (bonusAccumulator !== 0 && this.groups.length > 0) {
-        const last = this.groups[this.groups.length - 1];
+      if (bonusAccumulator !== 0 && groups.length > 0) {
+        const last = groups[groups.length - 1];
         last.bonus = (last.bonus || 0) + bonusAccumulator;
       } else if (bonusAccumulator !== 0) {
         const g = this._defaultGroup();
-        g.id = `g${++this.groupCounter}`;
+        g.id = `g${++counter}`;
         g.bonus = bonusAccumulator;
-        this.groups.push(g);
+        groups.push(g);
       }
+
+      return groups;
+    }
+
+    _parseAndSetNotation(notation) {
+      this.groups = this._parseToGroups(notation);
+      this.groupCounter = this.groups.length;
     }
 
     // ============================================================
-    // 5k. UI UPDATES
+    // 5n. UI UPDATES
     // ============================================================
     _updateOutput() {
       const notation = this.getNotation();
       const container = this._isPopup ? this.popupContainer : this.container;
       if (!container) return;
-
       const preview = container.querySelector('#db-preview-text');
       if (preview) preview.textContent = notation || '—';
     }
@@ -1218,13 +1850,11 @@
       const notation = this.getNotation();
       const callbacks = this.config.callbacks;
       safeCall(callbacks.onChange, notation, this.groups);
-      if (eventType && callbacks[eventType]) {
-        safeCall(callbacks[eventType], notation, this.groups, data);
-      }
+      if (eventType && callbacks[eventType]) safeCall(callbacks[eventType], notation, this.groups, data);
     }
 
     // ============================================================
-    // 5l. POPUP POSITIONING
+    // 5o. POPUP POSITIONING
     // ============================================================
     _positionPopup() {
       if (!this.targetInput || !this.popupContainer) return;
@@ -1241,15 +1871,13 @@
       let left = rect.left + (rect.width - popupW) / 2;
       left = Math.max(10, Math.min(left, winW - popupW - 10));
       let top = rect.bottom + 8;
-      if (top + popupH > winH - 10) {
-        top = rect.top - popupH - 8;
-      }
+      if (top + popupH > winH - 10) top = rect.top - popupH - 8;
       popup.style.left = left + 'px';
       popup.style.top = top + 'px';
     }
 
     // ============================================================
-    // 5m. STYLES
+    // 5p. STYLES
     // ============================================================
     _applyStyles(isPopup) {
       const target = isPopup ? this.popupContainer : this.container;
@@ -1262,9 +1890,8 @@
       const c = this._resolvePalette();
 
       const base = `
-        /* ---------- THEME VARIABLES (all from resolved palette) ---------- */
-        .die-builder,
-        .die-builder-popup {
+        /* ---------- THEME VARIABLES ---------- */
+        .die-builder, .die-builder-popup, .db-trigger-btn {
           --db-font: ${c.fontFamily};
           --db-primary: ${c.primary};
           --db-primary-hover: ${c.primaryHover};
@@ -1283,6 +1910,35 @@
           --db-border-subtle: ${c.borderSubtle};
           --db-input-bg: ${c.inputBg};
           --db-shadow: ${c.shadow};
+          --db-control-h: 34px;
+          --db-flip-duration: 550ms;
+        }
+
+        /* ---------- TRIGGER BUTTON (floating on input) ---------- */
+        .db-trigger-btn {
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          padding: 0;
+          border: 1px solid transparent;
+          background: transparent;
+          color: var(--db-text-muted);
+          border-radius: 6px;
+          cursor: pointer;
+          transition: background 150ms ease, color 150ms ease, border-color 150ms ease;
+          font-family: var(--db-font);
+          box-sizing: border-box;
+        }
+        .db-trigger-btn:hover {
+          background: var(--db-surface-hover);
+          color: var(--db-primary);
+        }
+        .db-trigger-btn:focus-visible {
+          outline: 2px solid var(--db-primary);
+          outline-offset: 1px;
+        }
+        .db-trigger-btn:active {
+          background: var(--db-surface);
         }
 
         /* ---------- BASE ---------- */
@@ -1296,9 +1952,8 @@
           -moz-osx-font-smoothing: grayscale;
           box-sizing: border-box;
         }
-        .die-builder *,
-        .die-builder *::before,
-        .die-builder *::after { box-sizing: border-box; }
+        .die-builder *, .die-builder *::before, .die-builder *::after { box-sizing: border-box; }
+        .die-builder :focus-visible { outline: 2px solid var(--db-primary); outline-offset: 2px; }
 
         /* ---------- HEADER ---------- */
         .db-header {
@@ -1312,20 +1967,15 @@
         }
         .db-header h3 {
           margin: 0;
-          font-size: 14px;
+          font-size: 15px;
           font-weight: 600;
-          letter-spacing: -0.01em;
+          letter-spacing: -0.015em;
           color: var(--db-text);
         }
-        .db-header-actions {
-          display: flex;
-          align-items: center;
-          gap: 2px;
-        }
+        .db-header-actions { display: flex; align-items: center; gap: 2px; }
 
         /* ---------- ICON BUTTONS ---------- */
-        .db-help-btn,
-        .db-close-btn {
+        .db-help-btn, .db-close-btn, .db-back-btn {
           display: inline-flex;
           align-items: center;
           justify-content: center;
@@ -1335,48 +1985,49 @@
           border: none;
           background: transparent;
           color: var(--db-text-muted);
-          font-size: 13px;
-          font-weight: 500;
+          font-size: 15px;
+          font-weight: 400;
           font-family: inherit;
           border-radius: 6px;
           cursor: pointer;
           transition: background 150ms ease, color 150ms ease;
           line-height: 1;
         }
-        .db-help-btn:hover,
-        .db-close-btn:hover {
+        .db-qty,
+        .db-bonus,
+        .db-rule-mod,
+        .db-limit-val,
+        .db-group-notation,
+        .db-preview strong {
+          font-variant-numeric: tabular-nums;
+        }
+        .db-help-btn:hover, .db-close-btn:hover, .db-back-btn:hover {
           background: var(--db-surface-hover);
           color: var(--db-text);
         }
-        .db-help-btn:hover { color: var(--db-primary); }
+        .db-help-btn:hover, .db-back-btn:hover { color: var(--db-primary); }
         .db-close-btn:hover { color: var(--db-danger); }
 
         /* ---------- MANUAL INPUT ---------- */
-        .db-manual {
-          display: flex;
-          gap: 8px;
-          margin-bottom: 16px;
-        }
+        .db-manual { display: flex; gap: 8px; margin-bottom: 16px; }
         .db-manual input {
           flex: 1;
-          padding: 8px 12px;
+          height: var(--db-control-h);
+          padding: 0 12px;
           font-size: 13px;
           font-family: inherit;
           color: var(--db-text);
           background: var(--db-input-bg);
           border: 1px solid var(--db-border);
           border-radius: 8px;
-          transition: border-color 150ms ease, box-shadow 150ms ease;
           outline: none;
         }
         .db-manual input::placeholder { color: var(--db-text-subtle); }
         .db-manual input:hover { border-color: var(--db-border-hover); }
-        .db-manual input:focus {
-          border-color: var(--db-primary);
-          box-shadow: 0 0 0 3px var(--db-primary-ring);
-        }
+        .db-manual input:focus { border-color: var(--db-primary); box-shadow: 0 0 0 3px var(--db-primary-ring); }
         .db-manual button {
-          padding: 8px 16px;
+          height: var(--db-control-h);
+          padding: 0 16px;
           font-size: 13px;
           font-weight: 500;
           font-family: inherit;
@@ -1385,11 +2036,11 @@
           border: none;
           border-radius: 8px;
           cursor: pointer;
-          transition: background 150ms ease;
+          white-space: nowrap;
         }
         .db-manual button:hover { background: var(--db-primary-hover); }
 
-        /* ---------- HELP PANEL ---------- */
+        /* ---------- HELP PANEL (standalone) ---------- */
         .db-help-panel {
           background: var(--db-surface);
           border: 1px solid var(--db-border-subtle);
@@ -1398,7 +2049,6 @@
           margin-bottom: 16px;
           max-height: 320px;
           overflow-y: auto;
-          animation: db-fade-in 180ms ease;
         }
         .db-help-header {
           display: flex;
@@ -1419,24 +2069,22 @@
           font-family: inherit;
           font-weight: 500;
           cursor: pointer;
-          text-transform: none;
-          letter-spacing: 0;
           padding: 4px 8px;
           border-radius: 6px;
-          transition: background 150ms ease;
         }
         .db-help-close:hover { background: var(--db-surface-hover); }
+
         .db-help-content { font-size: 12.5px; }
         .db-help-category { margin-bottom: 14px; }
         .db-help-category:last-child { margin-bottom: 0; }
         .db-help-category > strong {
           display: block;
-          font-size: 11px;
+          font-size: 10.5px;
           font-weight: 600;
           text-transform: uppercase;
-          letter-spacing: 0.06em;
+          letter-spacing: 0.12em;
           color: var(--db-text-muted);
-          margin-bottom: 6px;
+          margin-bottom: 8px;
         }
         .db-help-item {
           display: grid;
@@ -1447,15 +2095,8 @@
           border-bottom: 1px solid var(--db-border-subtle);
         }
         .db-help-item:last-child { border-bottom: none; }
-        .db-help-rule {
-          font-weight: 500;
-          color: var(--db-text);
-          font-size: 12.5px;
-        }
-        .db-help-desc {
-          color: var(--db-text-muted);
-          font-size: 12px;
-        }
+        .db-help-rule { font-weight: 500; color: var(--db-text); font-size: 12.5px; }
+        .db-help-desc { color: var(--db-text-muted); font-size: 12px; }
         .db-help-example {
           font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
           font-size: 11.5px;
@@ -1476,137 +2117,95 @@
           margin-bottom: 18px;
           align-items: start;
         }
-
         .db-col { min-width: 0; }
-        .db-col > label {
+        .db-col > label,
+        .db-col-label {
           display: block;
-          font-size: 10.5px;
-          font-weight: 600;
+          font-size: 10px;
+          font-weight: 500;
           text-transform: uppercase;
-          letter-spacing: 0.08em;
+          letter-spacing: 0.10em;
           color: var(--db-text-muted);
-          margin-bottom: 6px;
+          margin-bottom: 7px;
+          line-height: 1.2;
         }
-        .db-field {
-          display: flex;
-          gap: 6px;
-          flex-wrap: wrap;
-          align-items: center;
-        }
+        .db-field { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
 
-        /* ---------- UNIFIED INPUT STYLING ---------- */
-        .db-field input,
-        .db-field select,
-        .db-rule-selector,
-        .db-rule-mod,
-        .db-limit-val,
-        .db-limit-op {
+        /* ---------- UNIFIED CONTROL STYLING ---------- */
+        .db-qty, .db-die-type, .db-bonus, .db-rule-selector,
+        .db-rule-mod, .db-limit-op, .db-limit-val {
+          height: var(--db-control-h);
+          padding: 0 10px;
           font-family: inherit;
           font-size: 13px;
-          line-height: 1.4;
-          padding: 7px 10px;
+          line-height: 1;
           color: var(--db-text);
           background: var(--db-input-bg);
           border: 1px solid var(--db-border);
           border-radius: 7px;
-          transition: border-color 150ms ease, box-shadow 150ms ease, background 150ms ease;
           outline: none;
-          box-sizing: border-box;
+          vertical-align: middle;
         }
-        .db-field input:hover,
-        .db-field select:hover,
-        .db-rule-selector:hover,
-        .db-rule-mod:hover,
-        .db-limit-val:hover,
-        .db-limit-op:hover {
-          border-color: var(--db-border-hover);
-        }
-        .db-field input:focus,
-        .db-field select:focus,
-        .db-rule-selector:focus,
-        .db-rule-mod:focus,
-        .db-limit-val:focus,
-        .db-limit-op:focus {
+        .db-qty:hover, .db-die-type:hover, .db-bonus:hover,
+        .db-rule-selector:hover, .db-rule-mod:hover,
+        .db-limit-op:hover, .db-limit-val:hover { border-color: var(--db-border-hover); }
+        .db-qty:focus, .db-die-type:focus, .db-bonus:focus,
+        .db-rule-selector:focus, .db-rule-mod:focus,
+        .db-limit-op:focus, .db-limit-val:focus {
           border-color: var(--db-primary);
           box-shadow: 0 0 0 3px var(--db-primary-ring);
         }
 
         .db-qty { width: 64px; text-align: center; }
-        .db-die-type { width: 76px; }
+        .db-die-type { width: 76px; cursor: pointer; }
         .db-bonus { width: 76px; text-align: center; }
         .db-rule-mod { width: 56px; text-align: center; }
         .db-limit-val { width: 56px; text-align: center; }
-        .db-limit-op {
-          width: 52px;
-          text-align: center;
-          padding-left: 6px;
-          padding-right: 6px;
-          cursor: pointer;
-        }
+        .db-limit-op { width: 52px; text-align: center; padding: 0 6px; cursor: pointer; }
 
         /* ---------- RULES CONTAINER ---------- */
-        .db-rules-container {
-          display: flex;
-          flex-direction: column;
-          gap: 6px;
-        }
+        .db-rules-container { display: flex; flex-direction: column; gap: 6px; }
         .db-rule-entry {
           display: flex;
           align-items: center;
           gap: 6px;
-          padding: 4px;
-          background: var(--db-surface);
-          border: 1px solid var(--db-border-subtle);
-          border-radius: 8px;
-          transition: border-color 150ms ease;
-        }
-        .db-rule-entry:hover { border-color: var(--db-border); }
-        .db-rule-fields {
-          display: flex;
-          flex-wrap: wrap;
-          align-items: center;
-          gap: 6px;
-          flex: 1;
-          min-width: 0;
-        }
-        .db-rule-selector {
-          flex: 1;
-          min-width: 140px;
-          cursor: pointer;
-        }
-        .db-rule-remove {
-          display: inline-flex;
-          align-items: center;
-          justify-content: center;
-          width: 26px;
-          height: 26px;
-          padding: 0;
+          padding: 0 4px;
           background: transparent;
           border: none;
-          border-radius: 6px;
-          color: var(--db-text-subtle);
-          font-size: 12px;
-          font-family: inherit;
-          cursor: pointer;
-          transition: background 150ms ease, color 150ms ease;
-          flex-shrink: 0;
+          border-radius: 8px;
+          min-height: var(--db-control-h);
         }
-        .db-rule-remove:hover {
-          background: rgba(220, 38, 38, 0.1);
-          color: var(--db-danger);
+        .db-rule-entry:hover {
+          background: var(--db-surface);
+          box-shadow: inset 0 0 0 1px var(--db-border-subtle);
         }
+        .db-rule-entry:focus-within {
+          background: var(--db-surface);
+          box-shadow: inset 0 0 0 1px var(--db-border);
+        }
+        .db-rule-fields {
+          display: flex; flex-wrap: wrap; align-items: center;
+          gap: 6px; flex: 1; min-width: 0;
+        }
+        .db-rule-selector { flex: 1; min-width: 140px; cursor: pointer; }
+        .db-rule-remove {
+          display: inline-flex; align-items: center; justify-content: center;
+          width: 26px; height: 26px; padding: 0;
+          background: transparent; border: none; border-radius: 6px;
+          color: var(--db-text-subtle); font-size: 12px;
+          font-family: inherit; cursor: pointer; flex-shrink: 0;
+        }
+        .db-rule-remove:hover { background: rgba(220,38,38,0.1); color: var(--db-danger); }
         .db-add-rule-btn {
           align-self: flex-start;
-          padding: 6px 12px;
-          font-size: 12px;
-          font-weight: 500;
-          font-family: inherit;
+          height: 28px; padding: 0 12px;
+          font-size: 12px; font-weight: 500; font-family: inherit;
           color: var(--db-text-muted);
           background: transparent;
           border: 1px dashed var(--db-border);
           border-radius: 7px;
           cursor: pointer;
-          transition: all 150ms ease;
+          line-height: 1;
         }
         .db-add-rule-btn:hover {
           color: var(--db-primary);
@@ -1615,230 +2214,129 @@
           border-style: solid;
         }
         .db-no-mod {
+          display: inline-flex; align-items: center;
+          height: var(--db-control-h);
+          padding: 0 4px;
           color: var(--db-text-subtle);
           font-size: 12px;
-          font-style: italic;
-          padding: 7px 4px;
         }
 
-        /* ---------- ADD GROUP BUTTON ---------- */
+        /* ---------- ADD GROUP ---------- */
         .db-add-btn {
-          width: 100%;
-          padding: 9px 14px;
-          font-size: 13px;
-          font-weight: 500;
-          font-family: inherit;
-          color: white;
-          background: var(--db-primary);
-          border: none;
-          border-radius: 8px;
-          cursor: pointer;
-          transition: background 150ms ease, transform 100ms ease, box-shadow 150ms ease;
+          width: 100%; height: var(--db-control-h);
+          padding: 0 14px;
+          font-size: 13px; font-weight: 500; font-family: inherit;
+          color: white; background: var(--db-primary);
+          border: none; border-radius: 8px; cursor: pointer;
           box-shadow: 0 1px 2px rgba(15, 23, 42, 0.08);
-          white-space: nowrap;
+          line-height: 1;
         }
-        .db-add-btn:hover {
-          background: var(--db-primary-hover);
-          box-shadow: 0 2px 4px rgba(15, 23, 42, 0.12);
-        }
-        .db-add-btn:active {
-          transform: translateY(1px);
-          box-shadow: 0 1px 2px rgba(15, 23, 42, 0.08);
-        }
+        .db-add-btn:hover { background: var(--db-primary-hover); box-shadow: 0 2px 4px rgba(15,23,42,0.12); }
+        .db-add-btn:active { transform: translateY(1px); }
 
         /* ---------- GROUPS LIST ---------- */
         .db-groups-header {
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-          font-size: 10.5px;
-          font-weight: 600;
-          text-transform: uppercase;
-          letter-spacing: 0.08em;
-          color: var(--db-text-muted);
-          margin-bottom: 8px;
+          display: flex; align-items: center; justify-content: space-between;
+          font-size: 10.5px; font-weight: 600;
+          text-transform: uppercase; letter-spacing: 0.08em;
+          color: var(--db-text-muted); margin-bottom: 8px;
         }
         .db-groups-count {
-          display: inline-flex;
-          align-items: center;
-          justify-content: center;
-          min-width: 20px;
-          height: 20px;
-          padding: 0 6px;
-          font-size: 10.5px;
-          font-weight: 600;
-          letter-spacing: 0;
-          color: var(--db-text-muted);
-          background: var(--db-surface);
+          display: inline-flex; align-items: center; justify-content: center;
+          min-width: 20px; height: 20px; padding: 0 6px;
+          font-size: 10.5px; font-weight: 600;
+          color: var(--db-text-muted); background: var(--db-surface);
           border-radius: 10px;
         }
-        .db-groups {
-          display: flex;
-          flex-direction: column;
-          gap: 4px;
-          min-height: 44px;
-          margin-bottom: 16px;
-        }
+        .db-groups { display: flex; flex-direction: column; gap: 4px; min-height: 44px; margin-bottom: 16px; }
         .db-empty {
-          text-align: center;
-          color: var(--db-text-subtle);
-          font-size: 12.5px;
-          padding: 20px 12px;
-          border: 1px dashed var(--db-border-subtle);
-          border-radius: 8px;
+          text-align: center; color: var(--db-text-subtle); font-size: 12.5px;
+          padding: 20px 12px; border: 1px dashed var(--db-border-subtle); border-radius: 8px;
         }
         .db-group-item {
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-          gap: 12px;
-          padding: 8px 12px;
+          display: flex; align-items: center; justify-content: space-between;
+          gap: 12px; padding: 8px 12px;
           background: var(--db-surface);
-          border: 1px solid transparent;
-          border-radius: 8px;
-          transition: border-color 150ms ease, background 150ms ease;
+          border: 1px solid transparent; border-radius: 8px;
         }
         .db-group-item:hover { border-color: var(--db-border); }
         .db-group-item.invalid { opacity: 0.55; }
         .db-group-item.invalid .db-group-notation { color: var(--db-danger); }
         .db-group-info {
-          display: flex;
-          align-items: baseline;
-          gap: 12px;
-          flex-wrap: wrap;
-          min-width: 0;
-          flex: 1;
+          display: flex; align-items: baseline; gap: 12px;
+          flex-wrap: wrap; min-width: 0; flex: 1;
         }
         .db-group-notation {
           font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
-          font-size: 13px;
-          font-weight: 500;
-          color: var(--db-text);
-          letter-spacing: -0.01em;
+          font-size: 13px; font-weight: 500; color: var(--db-text); letter-spacing: -0.01em;
         }
         .db-group-desc {
-          font-size: 11px;
+          font-size: 10.5px;
+          font-weight: 500;
           color: var(--db-text-subtle);
           text-transform: uppercase;
-          letter-spacing: 0.04em;
+          letter-spacing: 0.06em;
         }
-        .db-group-actions {
-          display: flex;
-          gap: 2px;
-          opacity: 0.6;
-          transition: opacity 150ms ease;
-        }
-        .db-group-item:hover .db-group-actions { opacity: 1; }
+        .db-group-actions { display: flex; gap: 2px; opacity: 0.6; }
+        .db-group-item:hover .db-group-actions,
+        .db-group-item:focus-within .db-group-actions { opacity: 1; }
         .db-group-actions button {
-          display: inline-flex;
-          align-items: center;
-          justify-content: center;
-          width: 26px;
-          height: 26px;
-          padding: 0;
-          background: transparent;
-          border: none;
-          border-radius: 6px;
-          color: var(--db-text-muted);
-          font-size: 12px;
-          font-family: inherit;
-          cursor: pointer;
-          transition: background 150ms ease, color 150ms ease;
+          display: inline-flex; align-items: center; justify-content: center;
+          width: 26px; height: 26px; padding: 0;
+          background: transparent; border: none; border-radius: 6px;
+          color: var(--db-text-muted); font-size: 12px;
+          font-family: inherit; cursor: pointer;
         }
-        .db-group-actions .db-remove-btn:hover {
-          background: rgba(220, 38, 38, 0.1);
-          color: var(--db-danger);
-        }
-        .db-group-actions .db-edit-btn:hover {
-          background: var(--db-primary-ring);
-          color: var(--db-primary);
-        }
+        .db-group-actions .db-remove-btn:hover { background: rgba(220,38,38,0.1); color: var(--db-danger); }
+        .db-group-actions .db-edit-btn:hover { background: var(--db-primary-ring); color: var(--db-primary); }
 
         /* ---------- FOOTER ---------- */
         .db-footer {
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-          gap: 12px;
-          padding-top: 14px;
-          border-top: 1px solid var(--db-border-subtle);
-          flex-wrap: wrap;
+          display: flex; align-items: center; justify-content: space-between;
+          gap: 12px; padding-top: 14px;
+          border-top: 1px solid var(--db-border-subtle); flex-wrap: wrap;
         }
         .db-preview {
-          font-size: 12px;
-          color: var(--db-text-muted);
-          display: flex;
-          align-items: center;
-          gap: 8px;
-          min-width: 0;
-          flex: 1;
+          font-size: 12px; color: var(--db-text-muted);
+          display: flex; align-items: center; gap: 8px;
+          min-width: 0; flex: 1;
         }
         .db-preview strong {
           font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
-          font-size: 13px;
-          font-weight: 500;
-          color: var(--db-text);
-          background: var(--db-surface);
-          padding: 4px 10px;
-          border-radius: 6px;
-          overflow: hidden;
-          text-overflow: ellipsis;
-          white-space: nowrap;
-          max-width: 100%;
+          font-size: 13px; font-weight: 500; color: var(--db-text);
+          background: var(--db-surface); padding: 4px 10px; border-radius: 6px;
+          overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%;
         }
-        .db-actions {
-          display: flex;
-          gap: 8px;
-          flex-wrap: wrap;
-          align-items: center;
-        }
-        .db-copy-btn,
-        .db-clear-btn {
-          padding: 7px 14px;
-          font-size: 12.5px;
-          font-weight: 500;
-          font-family: inherit;
-          border-radius: 7px;
-          cursor: pointer;
-          transition: all 150ms ease;
+        .db-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+        .db-copy-btn, .db-clear-btn {
+          height: 32px; padding: 0 14px;
+          font-size: 12.5px; font-weight: 500; font-family: inherit;
+          border-radius: 7px; cursor: pointer;
           border: 1px solid var(--db-border);
-          background: var(--db-bg);
-          color: var(--db-text-muted);
+          background: var(--db-bg); color: var(--db-text-muted);
+          line-height: 1;
         }
-        .db-copy-btn:hover,
-        .db-clear-btn:hover {
+        .db-copy-btn:hover, .db-clear-btn:hover {
           color: var(--db-text);
           border-color: var(--db-border-hover);
           background: var(--db-surface);
         }
         .db-clear-btn:hover {
           color: var(--db-danger);
-          border-color: rgba(220, 38, 38, 0.3);
-          background: rgba(220, 38, 38, 0.06);
+          border-color: rgba(220,38,38,0.3);
+          background: rgba(220,38,38,0.06);
         }
         .db-accept-btn {
-          padding: 7px 18px;
-          font-size: 12.5px;
-          font-weight: 600;
-          font-family: inherit;
-          color: white;
-          background: var(--db-primary);
-          border: none;
-          border-radius: 7px;
-          cursor: pointer;
-          transition: background 150ms ease, box-shadow 150ms ease;
-          box-shadow: 0 1px 2px rgba(15, 23, 42, 0.08);
+          height: 32px; padding: 0 18px;
+          font-size: 12.5px; font-weight: 600; font-family: inherit;
+          color: white; background: var(--db-primary);
+          border: none; border-radius: 7px; cursor: pointer;
+          box-shadow: 0 1px 2px rgba(15,23,42,0.08);
+          line-height: 1;
         }
-        .db-accept-btn:hover {
-          background: var(--db-primary-hover);
-          box-shadow: 0 2px 4px rgba(15, 23, 42, 0.12);
-        }
+        .db-accept-btn:hover { background: var(--db-primary-hover); box-shadow: 0 2px 4px rgba(15,23,42,0.12); }
 
         /* ---------- ANIMATIONS ---------- */
-        @keyframes db-fade-in {
-          from { opacity: 0; transform: translateY(-2px); }
-          to   { opacity: 1; transform: translateY(0); }
-        }
         @keyframes db-popup-in {
           from { opacity: 0; transform: translateY(-6px) scale(0.985); }
           to   { opacity: 1; transform: translateY(0) scale(1); }
@@ -1846,26 +2344,46 @@
 
         /* ---------- RESPONSIVE ---------- */
         @media (max-width: 760px) {
-          .db-form {
-            grid-template-columns: 1fr 1fr;
-            gap: 14px;
-          }
+          .db-form { grid-template-columns: 1fr 1fr; gap: 14px; }
           .db-col-rules { grid-column: 1 / -1; }
           .db-col-actions { grid-column: 1 / -1; }
         }
         @media (max-width: 520px) {
           .db-form { grid-template-columns: 1fr; }
-          .db-col-rules,
-          .db-col-actions { grid-column: 1; }
-          .db-field input,
-          .db-field select,
-          .db-rule-selector,
-          .db-rule-mod,
-          .db-limit-val,
-          .db-limit-op { font-size: 16px; } /* prevent iOS zoom */
+          .db-col-rules, .db-col-actions { grid-column: 1; }
+          .db-qty, .db-die-type, .db-bonus, .db-rule-selector,
+          .db-rule-mod, .db-limit-op, .db-limit-val { font-size: 16px; }
           .db-help-item { grid-template-columns: 1fr; gap: 4px; }
           .db-help-example { justify-self: start; }
           .db-preview { flex-direction: column; align-items: flex-start; gap: 4px; }
+        }
+
+        /* ---------- REDUCED MOTION ---------- */
+        @media (prefers-reduced-motion: reduce) {
+          .die-builder *, .die-builder-popup * {
+            animation-duration: 0.01ms !important;
+            transition-duration: 0.01ms !important;
+          }
+        }
+
+        /* ---------- INLINE VALIDATION ---------- */
+        .db-form-error-banner {
+          grid-column: 1 / -1;
+          padding: 9px 12px;
+          margin: -2px 0 4px;
+          font-size: 12px;
+          line-height: 1.45;
+          color: var(--db-danger);
+          background: color-mix(in srgb, var(--db-danger) 8%, transparent);
+          border: 1px solid color-mix(in srgb, var(--db-danger) 28%, transparent);
+          border-radius: 7px;
+        }
+        .db-form-error-banner > div + div {
+          margin-top: 3px;
+        }
+        .db-input-error {
+          border-color: var(--db-danger) !important;
+          box-shadow: 0 0 0 3px color-mix(in srgb, var(--db-danger) 14%, transparent) !important;
         }
       `;
 
@@ -1873,6 +2391,51 @@
         .die-builder-popup {
           position: fixed;
           z-index: 9999;
+          box-sizing: border-box;
+          animation: db-popup-in 200ms cubic-bezier(0.16, 1, 0.3, 1);
+          font-family: var(--db-font);
+          color: var(--db-text);
+          /* No background, border, shadow, padding or overflow —
+             the visual "card" lives on the flip faces so it rotates
+             with them. This is now a transparent positioning wrapper. */
+        }
+        .die-builder-popup .die-builder {
+          padding: 0;
+          border: none;
+          background: transparent;
+          border-radius: 0;
+        }
+
+        /* ---------- FLIP CARD ---------- */
+        .db-flip-container {
+          perspective: 1400px;
+          width: 100%;
+        }
+        .db-flip-inner {
+          position: relative;
+          transform-style: preserve-3d;
+          height: 0;
+          transition:
+            transform var(--db-flip-duration) cubic-bezier(0.4, 0.0, 0.2, 1),
+            height var(--db-flip-duration) cubic-bezier(0.4, 0.0, 0.2, 1);
+        }
+        .db-flip-inner[data-flipped="true"] { transform: rotateY(180deg); }
+                .db-flip-face {
+          position: absolute;
+          top: 0;
+          left: 0;
+          width: 100%;
+          backface-visibility: hidden;
+          -webkit-backface-visibility: hidden;
+          /* Pure transform layer — no background, no border, no radius,
+             no padding, no shadow. Just holds the 3D rotation. */
+        }
+        .db-flip-face.db-flip-back { transform: rotateY(180deg); }
+        .db-flip-face.db-flip-back .db-help-content { padding-top: 4px; }
+
+        /* The visual card — plain 2D element inside the transformed face,
+           so border-radius clips reliably in every browser. */
+        .db-face-card {
           padding: 22px;
           background: var(--db-bg);
           border: 1px solid var(--db-border-subtle);
@@ -1882,23 +2445,49 @@
             0 12px 24px -6px var(--db-shadow),
             0 32px 64px -16px var(--db-shadow);
           max-height: 80vh;
-          overflow-y: auto;
+          overflow: hidden;
+          display: flex;
+          transform: translateZ(0);
+          contain: paint;
+          flex-direction: column;
           box-sizing: border-box;
-          animation: db-popup-in 200ms cubic-bezier(0.16, 1, 0.3, 1);
-          font-family: var(--db-font);
-          color: var(--db-text);
         }
-        .die-builder-popup .die-builder {
-          padding: 0;
-          border: none;
+
+        /* Scroll layer */
+        .db-face-content {
+          flex: 1;
+          min-height: 0;
+          overflow-y: auto;
+          overscroll-behavior: contain;
+          scrollbar-gutter: stable;
+          scrollbar-width: thin;
+          scrollbar-color: var(--db-border) transparent;
+        }
+        .db-face-content::-webkit-scrollbar {
+          width: 8px;
+          height: 8px;
+        }
+        .db-face-content::-webkit-scrollbar-track {
           background: transparent;
-          border-radius: 0;
+        }
+        .db-face-content::-webkit-scrollbar-thumb {
+          background: var(--db-border);
+          border-radius: 4px;
+          border: 2px solid transparent;
+          background-clip: content-box;
+        }
+        .db-face-content::-webkit-scrollbar-thumb:hover {
+          background: var(--db-border-hover);
+          background-clip: content-box;
+          border: 2px solid transparent;
         }
 
         @media (max-width: 760px) {
           .die-builder-popup {
             width: 95vw !important;
             left: 2.5vw !important;
+          }
+          .db-face-card {
             padding: 18px;
             border-radius: 12px;
           }
@@ -1909,7 +2498,7 @@
     }
 
     // ============================================================
-    // 5n. DESTROY
+    // 5q. DESTROY
     // ============================================================
     destroy() {
       this._eventListeners.forEach(({ el, event, handler }) => {
@@ -1917,6 +2506,16 @@
       });
       this._eventListeners = [];
       clearTimeout(this._clickingInsideTimer);
+      clearTimeout(this._validateDebounce);
+      if (this._focusTrapHandler) {
+        document.removeEventListener('keydown', this._focusTrapHandler);
+        this._focusTrapHandler = null;
+      }
+      if (this._faceResizeObserver) {
+        this._faceResizeObserver.disconnect();
+        this._faceResizeObserver = null;
+      }
+      this._destroyTriggerButton();
       if (this.container) this.container.innerHTML = '';
       if (this.popupContainer) {
         this.popupContainer.remove();

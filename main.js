@@ -58,17 +58,14 @@
         const builder = new DieBuilder({
         popup: {
             enabled: true,
+            trigger: 'button',
             targetInput: '#textInput',
             width: '85vw',
             closeOnOutsideClick: true,
             closeOnEscape: true
         },
         theme: {
-            mode: 'dark',
-            colors: {
-                primary: '#ff6b6b',
-                success: '#2ecc71'
-            }
+            mode: 'dark'
         },
         callbacks: {
             onAccept: (notation) => {
@@ -78,14 +75,8 @@
             onError: (err) => {
                 alert('Error: ' + err.message);
             }
-            },
-            // Custom validator (optional)
-            validator: (notation) => {
-            if (notation.includes('d1')) return 'd1 is not allowed';
-            return true;
         }
     });
-
     builder.attachTo('#textInput');
     }
 
