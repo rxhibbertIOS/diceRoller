@@ -1725,6 +1725,11 @@ var DICE = (function() {
             var groupDef = findGroupById(notation, parseInt(gid, 10));
             if (!groupDef) continue;
 
+            var originalGroupId = groupDef.originalGroupId !== undefined ? groupDef.originalGroupId : groupDef.id;
+            for (var d = 0; d < groupDice.length; d++) {
+                groupDice[d].originalGroupId = originalGroupId;
+            }
+
             var rules = groupDef.rules || [];
             // We only apply static rules here; dynamic ones (explode, reroll) are handled elsewhere.
             for (var ri = 0; ri < rules.length; ri++) {
@@ -1833,6 +1838,60 @@ var DICE = (function() {
                 }
             }
         }
+    }
+
+    function sortKeptDice(kept, notation) {
+        if (!notation || !notation.groups) return kept;
+
+        var groups = {};
+        for (var i = 0; i < kept.length; i++) {
+            var die = kept[i];
+            var gid = die.originalGroupId !== undefined ? die.originalGroupId : die.groupId;
+            if (!groups[gid]) groups[gid] = [];
+            groups[gid].push(die);
+        }
+
+        var ordered = [];
+
+        for (var gi = 0; gi < notation.groups.length; gi++) {
+            var group = notation.groups[gi];
+            var gid = group.originalGroupId !== undefined ? group.originalGroupId : group.id;
+            var dice = groups[gid];
+            if (!dice) continue;
+
+            // Find the last sort rule for this group
+            var sortRule = null;
+            if (group.rules) {
+                for (var ri = 0; ri < group.rules.length; ri++) {
+                    var r = group.rules[ri];
+                    if (r.type === 'sort-ascending' || r.type === 'sort-descending') {
+                        sortRule = r;
+                    }
+                }
+            }
+
+            if (sortRule) {
+                if (sortRule.type === 'sort-ascending') {
+                    dice.sort(function(a, b) {
+                        return a.value - b.value || a.diceId - b.diceId;
+                    });
+                } else {
+                    dice.sort(function(a, b) {
+                        return b.value - a.value || a.diceId - b.diceId;
+                    });
+                }
+            }
+
+            for (var d = 0; d < dice.length; d++) ordered.push(dice[d]);
+            delete groups[gid];
+        }
+
+        // Append any remaining dice (shouldn't normally happen)
+        for (var gid in groups) {
+            for (var d = 0; d < groups[gid].length; d++) ordered.push(groups[gid][d]);
+        }
+
+        return ordered;
     }
 
     /**
@@ -2085,6 +2144,9 @@ var DICE = (function() {
 
         // Build result string
         var values = keptAccum.map(d => d.value);
+        if (box._originalNotation) {
+            keptAccum = sortKeptDice(keptAccum, box._originalNotation);
+        }
         var resultString = values.join(' ');
         if (lastNotation.constant) {
             if (lastNotation.constant > 0) resultString += ' +' + lastNotation.constant;
@@ -2138,6 +2200,7 @@ var DICE = (function() {
 
         // Parse notation
         var notation = that.parse_notation(box.diceToRoll);
+        box._originalNotation = notation;
         console.log('Dice Roll: Parsed notation:', notation);
 
         if (notation.error) {
@@ -2232,6 +2295,7 @@ var DICE = (function() {
 
                         // Build final notation
                         var kept = combined.filter(d => d.kept);
+                        kept = sortKeptDice(kept, notation);
                         var resultTotal = 0;
                         for (var i = 0; i < kept.length; i++) resultTotal += kept[i].value;
                         resultTotal += notation.constant || 0;
