@@ -6,12 +6,6 @@
  *  @version 0.1
  */
 
-window.onkeydown = function(e) {
-    //console.log(e.code);
-    if(e.code === "Enter" || e.code === "Escape") {
-        main.setInput(); //closes numPad
-    }
-}
 
  var main = (function() {
     var that = {}; 
@@ -27,7 +21,6 @@ window.onkeydown = function(e) {
         elem.container = $t.id('diceRoller');
         elem.result = $t.id('result');
         elem.textInput = $t.id('textInput'); 
-        elem.numPad = $t.id('numPad');
         elem.instructions = $t.id('instructions');
         elem.center_div = $t.id('center_div');
         elem.diceLimit = $t.id('diceLimit');
@@ -46,13 +39,6 @@ window.onkeydown = function(e) {
         $t.bind(elem.textInput, 'focus', function(ev) {
             elem.diceLimit.style.display = 'none';
             //ev.preventDefault();
-            if(!vars.numpadShowing) {
-                show_instructions(false);
-                show_numPad(true);
-            } else if(vars.userTyping) {
-                _handleInput();
-                vars.userTyping = false;
-            }
         });
         $t.bind(elem.textInput, 'blur', function(ev) {
             //necessary to do this here for iOS compatibility
@@ -68,6 +54,43 @@ window.onkeydown = function(e) {
         //box.start_throw(); //start by throwing all the dice on the table
 
         show_instructions(true);
+
+        const builder = new DieBuilder({
+        popup: {
+            enabled: true,
+            targetInput: '#textInput',
+            width: '85vw',
+            closeOnOutsideClick: true,
+            closeOnEscape: true
+        },
+        theme: {
+            mode: 'dark',
+            colors: {
+                primary: '#ff6b6b',
+                success: '#2ecc71'
+            }
+        },
+        labels: {
+            title: '🎲 My Dice Builder',
+            addRule: 'Add Modifier'
+        },
+        callbacks: {
+            onAccept: (notation) => {
+                console.log('Accepted:', notation);
+                // Your app logic
+            },
+            onError: (err) => {
+                alert('Error: ' + err.message);
+            }
+            },
+            // Custom validator (optional)
+            validator: (notation) => {
+            if (notation.includes('d1')) return 'd1 is not allowed';
+            return true;
+        }
+    });
+
+    builder.attachTo('#textInput');
     }
 
     that.setInput = function() {
@@ -94,19 +117,11 @@ window.onkeydown = function(e) {
         let d = DICE.parse_notation(inputVal);
         let numDice = d.set.length;
         box.setDice(inputVal);
-        show_numPad(false);
         show_instructions(true);
     }
 
     that.clearInput = function() {
         elem.textInput.value = '';
-    }
-
-    //called from numPad onclicks
-    that.input = function(value) {
-        vars.lastVal = value;
-        vars.userTyping = true;
-        elem.textInput.focus();
     }
 
     function _handleInput() {
@@ -150,20 +165,6 @@ window.onkeydown = function(e) {
             elem.instructions.style.display = 'inline-block';
         } else {
             elem.instructions.style.display = 'none';
-        }
-    }
-
-    // show input options
-    // param show = bool
-    function show_numPad(show) {
-        if(show) {
-            vars.numpadShowing = true;
-            elem.numPad.style.display = 'inline-block';
-            elem.textInput.focus();
-        } else {
-            vars.numpadShowing = false;
-            elem.textInput.blur();
-            elem.numPad.style.display = 'none';
         }
     }
 

@@ -28,7 +28,6 @@
             <input type="text" id="textInput" 
             spellcheck="false"
             inputmode="none"
-            virtualkeyboardpolicy="manual"
             value="1d4+1d6+1d8+1d10+1d12+1d20"></input>
         </div>
         <div id="diceLimit" style="display:none">
@@ -40,37 +39,7 @@
                 <p>Swipe to roll dice</p>
             </div>
         </div> 
-        <div id="numPad" class="center_field" style="display:none">
-            <table class="numPad">
-                <tr>
-                    <td onclick="main.input('del')" colspan="2">del</td>
-                    <td onclick="main.input('bksp')" colspan="2">bksp</td>
-                </tr>
-                <tr>
-                    <td onclick="main.input('7')">7</td>
-                    <td onclick="main.input('8')">8</td>
-                    <td onclick="main.input('9')">9</td>
-                    <td onclick="main.input('+')" rowspan="2">+</td>
-                </tr>
-                <tr>
-                    <td onclick="main.input('4')">4</td>
-                    <td onclick="main.input('5')">5</td>
-                    <td onclick="main.input('6')">6</td>
-                </tr>
-                <tr>
-                    <td onclick="main.input('1')">1</td>
-                    <td onclick="main.input('2')">2</td>
-                    <td onclick="main.input('3')">3</td>
-                    <td onclick="main.input('-')" rowspan="2">-</td>
-                </tr>
-                <tr>
-                    <td onclick="main.input('0')" colspan="2">0</td>
-                    <td onclick="main.input('d')">d</td>
-                </tr>
-            </table> 
-            <button onclick="main.clearInput()">CLEAR</button>
-            <button onclick="main.setInput()">OK</button>           
-        </div> 
+        <div id="builder"></div>
         <div class="bottom_field">
             <span id="result"></span>
         </div>  
@@ -80,6 +49,7 @@
     <script src="libs/cannon.min.js"></script>
     <script src="libs/teal.js"></script>
     <script src="dice.js"></script>
+    <script src="dieBuilder.js"></script>
     <script src="main.js"></script>
 </body>
 </html>
