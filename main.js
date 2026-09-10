@@ -70,10 +70,6 @@
                 success: '#2ecc71'
             }
         },
-        labels: {
-            title: '🎲 My Dice Builder',
-            addRule: 'Add Modifier'
-        },
         callbacks: {
             onAccept: (notation) => {
                 console.log('Accepted:', notation);

@@ -133,38 +133,71 @@
     }
   };
 
+  // None first, then the rest in priority order
   const RULE_CATEGORIES = {
+    none: { label: '⚪ No Rule', order: 0 },
     filter:  { label: '📊 Keep/Drop', order: 1 },
     explosion: { label: '💥 Explosions', order: 2 },
     reroll: { label: '🔄 Rerolls', order: 3 },
     sort: { label: '📋 Sorting', order: 4 },
     critical: { label: '🎯 Criticals', order: 5 },
-    success: { label: '✅ Success Counting', order: 6 },
-    none: { label: '⚪ No Rule', order: 7 }
+    success: { label: '✅ Success Counting', order: 6 }
   };
 
   // ============================================================
-  // 2. DEFAULTS & CONFIGURATION
+  // 2. THEME PALETTES
+  // ============================================================
+  const LIGHT_PALETTE = {
+    primary: '#6366f1',
+    primaryHover: '#4f46e5',
+    primaryRing: 'rgba(99,102,241,0.15)',
+    success: '#059669',
+    danger: '#dc2626',
+    warning: '#d97706',
+    background: '#ffffff',
+    surface: '#f8fafc',
+    surfaceHover: '#f1f5f9',
+    text: '#0f172a',
+    textMuted: '#64748b',
+    textSubtle: '#94a3b8',
+    border: '#e2e8f0',
+    borderHover: '#cbd5e1',
+    borderSubtle: '#f1f5f9',
+    inputBg: '#ffffff',
+    shadow: 'rgba(15,23,42,0.12)',
+    fontFamily: '-apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif'
+  };
+
+  const DARK_PALETTE = {
+    primary: '#818cf8',
+    primaryHover: '#6366f1',
+    primaryRing: 'rgba(129,140,248,0.22)',
+    success: '#34d399',
+    danger: '#f87171',
+    warning: '#fbbf24',
+    background: '#0f172a',
+    surface: '#1e293b',
+    surfaceHover: '#334155',
+    text: '#f1f5f9',
+    textMuted: '#94a3b8',
+    textSubtle: '#64748b',
+    border: '#334155',
+    borderHover: '#475569',
+    borderSubtle: '#1e293b',
+    inputBg: '#1e293b',
+    shadow: 'rgba(0,0,0,0.5)',
+    fontFamily: LIGHT_PALETTE.fontFamily
+  };
+
+  // ============================================================
+  // 3. DEFAULTS & CONFIGURATION
   // ============================================================
   const DEFAULTS = {
     dieTypes: ['d4', 'd6', 'd8', 'd10', 'd12', 'd20', 'd100'],
     comparisonOps: ['=', '>', '<'],
     theme: {
       mode: 'light',
-      colors: {
-        primary: '#4a90d9',
-        primaryHover: '#3a7bc8',
-        success: '#27ae60',
-        danger: '#e74c3c',
-        warning: '#f39c12',
-        background: '#ffffff',
-        surface: '#f5f5f5',
-        surfaceHover: '#e9e9e9',
-        text: '#333333',
-        textMuted: '#888888',
-        border: '#dddddd',
-        shadow: 'rgba(0,0,0,0.15)'
-      }
+      colors: {} // user overrides layered on top of the mode's defaults
     },
     labels: {
       title: '🎲 Dice Notation Builder',
@@ -221,7 +254,7 @@
   };
 
   // ============================================================
-  // 3. HELPERS
+  // 4. HELPERS
   // ============================================================
   function deepMerge(target, source) {
     const result = { ...target };
@@ -248,7 +281,7 @@
   }
 
   // ============================================================
-  // 4. MAIN CLASS
+  // 5. MAIN CLASS
   // ============================================================
   class DieBuilder {
     constructor(config = {}) {
@@ -272,8 +305,15 @@
       }
     }
 
+    // Resolve the effective palette: mode default → user overrides
+    _resolvePalette() {
+      const mode = this.config.theme.mode === 'dark' ? 'dark' : 'light';
+      const base = mode === 'dark' ? DARK_PALETTE : LIGHT_PALETTE;
+      return { ...base, ...(this.config.theme.colors || {}) };
+    }
+
     // ============================================================
-    // 4a. CONFIGURATION API
+    // 5a. CONFIGURATION API
     // ============================================================
     setConfig(config) {
       this.config = deepMerge(this.config, config);
@@ -295,7 +335,7 @@
     }
 
     // ============================================================
-    // 4b. INIT / ATTACH
+    // 5b. INIT / ATTACH
     // ============================================================
     init(element, options = {}) {
       if (Object.keys(options).length > 0) {
@@ -335,8 +375,6 @@
       this.popupContainer.style.display = 'none';
       document.body.appendChild(this.popupContainer);
 
-      // Track mousedown inside popup so blur/outside-click don't close it
-      // while we're mid-interaction (buttons get detached on re-render).
       this.popupContainer.addEventListener('mousedown', () => {
         this._clickingInside = true;
         clearTimeout(this._clickingInsideTimer);
@@ -350,7 +388,6 @@
       this._bindCommonEvents();
       this._bindFormEvents();
 
-      // Parse any pre-existing notation already in the input
       this._lastInputValue = (this.targetInput.value || '').trim();
       if (this._lastInputValue) {
         this._parseAndSetNotation(this._lastInputValue);
@@ -393,12 +430,11 @@
     }
 
     // ============================================================
-    // 4c. POPUP CONTROL
+    // 5c. POPUP CONTROL
     // ============================================================
     show() {
       if (!this._isPopup) return;
 
-      // Sync from the input if it has been changed externally since we last saw it.
       const currentInput = (this.targetInput.value || '').trim();
       if (currentInput !== (this._lastInputValue || '')) {
         this._lastInputValue = currentInput;
@@ -438,7 +474,7 @@
     }
 
     // ============================================================
-    // 4d. NOTATION OPERATIONS
+    // 5d. NOTATION OPERATIONS
     // ============================================================
     getNotation() {
       const validGroups = this.groups.filter(g => this._isGroupValid(g));
@@ -489,7 +525,7 @@
     }
 
     // ============================================================
-    // 4e. HELP PANEL
+    // 5e. HELP PANEL
     // ============================================================
     toggleHelp() {
       this._helpVisible = !this._helpVisible;
@@ -525,7 +561,7 @@
     }
 
     // ============================================================
-    // 4f. ERROR HANDLING
+    // 5f. ERROR HANDLING
     // ============================================================
     _handleError(error) {
       this._error = error;
@@ -556,7 +592,7 @@
     }
 
     // ============================================================
-    // 4g. INTERNAL RENDER METHODS
+    // 5g. INTERNAL RENDER METHODS
     // ============================================================
     _renderStandalone() {
       this.container.innerHTML = this._buildHTML(false);
@@ -580,9 +616,9 @@
 
     _buildHTML(isPopup) {
       const { labels, features } = this.config;
-      const closeBtn = isPopup ? `<button class="db-close-btn" id="db-close-btn">✕</button>` : '';
-      const acceptBtn = isPopup ? `<button class="db-accept-btn" id="db-accept-btn">✅ ${labels.accept}</button>` : '';
-      const helpBtn = `<button class="db-help-btn" id="db-help-btn" title="${labels.help}">📖</button>`;
+      const closeBtn = isPopup ? `<button class="db-close-btn" id="db-close-btn" aria-label="Close">✕</button>` : '';
+      const acceptBtn = isPopup ? `<button class="db-accept-btn" id="db-accept-btn">${labels.accept}</button>` : '';
+      const helpBtn = `<button class="db-help-btn" id="db-help-btn" title="${labels.help}" aria-label="${labels.help}">?</button>`;
       const manual = features.allowManual && !isPopup ? `
         <div class="db-manual">
           <input type="text" id="db-manual-input" placeholder="${labels.manualPlaceholder}" />
@@ -611,7 +647,8 @@
             ${this._renderGroupForm()}
           </div>
           <div class="db-groups-header">
-            <span>Groups (${this.groups.length})</span>
+            <span>Groups</span>
+            <span class="db-groups-count">${this.groups.length}</span>
           </div>
           <div class="db-groups" id="db-groups-list">
             <div class="db-empty">${labels.noGroups}</div>
@@ -621,8 +658,8 @@
               <span class="db-preview">${labels.notation} <strong id="db-preview-text">—</strong></span>
             ` : ''}
             <div class="db-actions">
-              <button class="db-clear-btn" id="db-clear-btn">🗑️ ${labels.clearAll}</button>
-              <button class="db-copy-btn" id="db-copy-btn">📋 ${labels.copy}</button>
+              <button class="db-clear-btn" id="db-clear-btn">${labels.clearAll}</button>
+              <button class="db-copy-btn" id="db-copy-btn">${labels.copy}</button>
               ${acceptBtn}
             </div>
           </div>
@@ -643,7 +680,6 @@
           <div class="db-rule-entry" data-rule-index="${idx}">
             <div class="db-rule-fields">
               <select class="db-rule-selector" data-rule-idx="${idx}">
-                <option value="">Select rule...</option>
                 ${Object.entries(categorizedRules).map(([cat, rules]) => `
                   <optgroup label="${RULE_CATEGORIES[cat]?.label || cat}">
                     ${rules.map(r => `
@@ -656,7 +692,7 @@
               </select>
               ${this._renderRuleModifiers(ruleEntry, g, idx)}
             </div>
-            ${rulesArray.length > 1 ? `<button class="db-rule-remove" data-rule-idx="${idx}">✕</button>` : ''}
+            ${rulesArray.length > 1 ? `<button class="db-rule-remove" data-rule-idx="${idx}" aria-label="Remove rule">✕</button>` : ''}
           </div>
         `;
       });
@@ -673,16 +709,14 @@
                 ).join('')}
               </select>
             </div>
-            ${features.showHelp ? `<div class="db-help">${this.config.helpText?.base || ''}</div>` : ''}
           </div>
 
           <div class="db-col db-col-rules">
             <label>${labels.rule}</label>
             <div class="db-rules-container">
               ${ruleEntries}
-              <button class="db-add-rule-btn">➕ ${labels.addRule}</button>
+              <button class="db-add-rule-btn">+ ${labels.addRule}</button>
             </div>
-            ${features.showHelp ? `<div class="db-help">${this.config.helpText?.rule || ''}</div>` : ''}
           </div>
 
           <div class="db-col db-col-bonus">
@@ -690,11 +724,10 @@
             <div class="db-field">
               <input type="number" class="db-bonus" value="${g.bonus || 0}" step="1" />
             </div>
-            ${features.showHelp ? `<div class="db-help">${this.config.helpText?.bonus || ''}</div>` : ''}
           </div>
 
           <div class="db-col db-col-actions">
-            <button class="db-add-btn">${isEdit ? labels.updateGroup : '➕ ' + labels.addGroup}</button>
+            <button class="db-add-btn">${isEdit ? labels.updateGroup : labels.addGroup}</button>
           </div>
         </div>
       `;
@@ -729,13 +762,16 @@
                  value="${currentVal}" min="${min}" max="${dieMax}" />
         `;
       }
-      return html || `<span class="db-no-mod">${this.config.labels.noModifiers}</span>`;
+      return html || `<span class="db-no-mod">—</span>`;
     }
 
     _renderGroups() {
       const container = this._isPopup ? this.popupContainer : this.container;
       const list = container.querySelector('#db-groups-list');
       if (!list) return;
+
+      const countEl = container.querySelector('.db-groups-count');
+      if (countEl) countEl.textContent = this.groups.length;
 
       if (this.groups.length === 0) {
         list.innerHTML = `<div class="db-empty">${this.config.labels.noGroups}</div>`;
@@ -744,8 +780,8 @@
 
       list.innerHTML = this.groups.map((g, index) => {
         const valid = this._isGroupValid(g);
-        const notation = valid ? this._buildGroupNotation(g) : '⚠️ Invalid';
-        const rulesStr = g.rules.map(r => RULE_DEFS[r.id]?.label || r.id).join(', ');
+        const notation = valid ? this._buildGroupNotation(g) : 'Invalid';
+        const rulesStr = g.rules.map(r => RULE_DEFS[r.id]?.label || r.id).join(' · ');
         return `
           <div class="db-group-item ${valid ? '' : 'invalid'}" data-index="${index}">
             <div class="db-group-info">
@@ -753,8 +789,8 @@
               <span class="db-group-desc">${rulesStr}</span>
             </div>
             <div class="db-group-actions">
-              <button class="db-edit-btn" data-index="${index}">✏️</button>
-              <button class="db-remove-btn" data-index="${index}">✕</button>
+              <button class="db-edit-btn" data-index="${index}" aria-label="Edit">✎</button>
+              <button class="db-remove-btn" data-index="${index}" aria-label="Remove">✕</button>
             </div>
           </div>
         `;
@@ -767,18 +803,17 @@
         if (!categorized[rule.category]) categorized[rule.category] = [];
         categorized[rule.category].push(rule);
       }
-      for (const cat in categorized) {
-        categorized[cat].sort((a, b) => {
-          const orderA = RULE_CATEGORIES[a.category]?.order || 99;
-          const orderB = RULE_CATEGORIES[b.category]?.order || 99;
-          return orderA - orderB;
-        });
-      }
-      return categorized;
+      // Sort category groups by order
+      const sortedCategories = Object.keys(categorized).sort((a, b) => {
+        return (RULE_CATEGORIES[a]?.order ?? 99) - (RULE_CATEGORIES[b]?.order ?? 99);
+      });
+      const result = {};
+      for (const cat of sortedCategories) result[cat] = categorized[cat];
+      return result;
     }
 
     // ============================================================
-    // 4h. EVENT BINDING
+    // 5h. EVENT BINDING
     // ============================================================
     _bindCommonEvents() {
       const container = this._isPopup ? this.popupContainer : this.container;
@@ -796,9 +831,7 @@
       }
 
       const clearBtn = container.querySelector('#db-clear-btn');
-      if (clearBtn) {
-        clearBtn.addEventListener('click', () => this.clear());
-      }
+      if (clearBtn) clearBtn.addEventListener('click', () => this.clear());
 
       const copyBtn = container.querySelector('#db-copy-btn');
       if (copyBtn) {
@@ -806,8 +839,9 @@
           const notation = this.getNotation();
           if (notation) {
             navigator.clipboard?.writeText(notation).then(() => {
-              copyBtn.textContent = '✅ ' + this.config.labels.copied;
-              setTimeout(() => copyBtn.textContent = '📋 ' + this.config.labels.copy, 2000);
+              const orig = copyBtn.textContent;
+              copyBtn.textContent = this.config.labels.copied;
+              setTimeout(() => copyBtn.textContent = orig, 2000);
             }).catch(() => {
               const textarea = document.createElement('textarea');
               textarea.value = notation;
@@ -821,9 +855,8 @@
       }
 
       const helpBtn = container.querySelector('#db-help-btn');
-      if (helpBtn) {
-        helpBtn.addEventListener('click', () => this.toggleHelp());
-      }
+      if (helpBtn) helpBtn.addEventListener('click', () => this.toggleHelp());
+
       const helpClose = container.querySelector('#db-help-close');
       if (helpClose) {
         helpClose.addEventListener('click', () => {
@@ -950,13 +983,9 @@
     _bindPopupEvents() {
       const container = this.popupContainer;
       const closeBtn = container.querySelector('#db-close-btn');
-      if (closeBtn) {
-        closeBtn.addEventListener('click', () => this.hide(false));
-      }
+      if (closeBtn) closeBtn.addEventListener('click', () => this.hide(false));
       const acceptBtn = container.querySelector('#db-accept-btn');
-      if (acceptBtn) {
-        acceptBtn.addEventListener('click', () => this.hide(true));
-      }
+      if (acceptBtn) acceptBtn.addEventListener('click', () => this.hide(true));
     }
 
     _bindFormEvents() {
@@ -978,7 +1007,7 @@
     }
 
     // ============================================================
-    // 4i. DATA COLLECTION & VALIDATION
+    // 5i. DATA COLLECTION & VALIDATION
     // ============================================================
     _collectFormData(form) {
       const qty = parseInt(form.querySelector('.db-qty')?.value) || 1;
@@ -1055,13 +1084,7 @@
     }
 
     // ============================================================
-    // 4j. PARSING
-    //
-    // Iterative parser that:
-    //  - recognises `NdN` group starts anywhere in the string
-    //    (so `kh18d6` is treated as `kh1` + `8d6`)
-    //  - accumulates pure bonuses (`+3`, `-2`, `5`)
-    //  - silently skips unparseable chars to avoid infinite loops
+    // 5j. PARSING
     // ============================================================
     _parseAndSetNotation(notation) {
       this.groups = [];
@@ -1093,14 +1116,12 @@
       const MAX_ITER = 300;
 
       while (remaining.length > 0 && safety++ < MAX_ITER) {
-        // Skip leading whitespace and + separators
         const skip = remaining.match(/^[\s+]+/);
         if (skip) {
           remaining = remaining.slice(skip[0].length);
           if (!remaining) break;
         }
 
-        // Try to match a die group start
         const dieMatch = remaining.match(/^(\d+)d(\d+)/);
         if (dieMatch) {
           const group = this._defaultGroup();
@@ -1109,7 +1130,6 @@
           group.dieType = `d${dieMatch[2]}`;
           remaining = remaining.slice(dieMatch[0].length);
 
-          // Parse rules greedily until nothing more matches at position 0
           const rules = [];
           let rulesRunning = true;
           while (rulesRunning && remaining.length > 0) {
@@ -1145,7 +1165,6 @@
             }
           }
 
-          // Optional trailing bonus like '+5' or '-3' — only if not followed by 'd'
           const bonusMatch = remaining.match(/^([+-]\d+)(?![d\d])/);
           if (bonusMatch) {
             group.bonus = parseInt(bonusMatch[1]);
@@ -1162,7 +1181,6 @@
           continue;
         }
 
-        // Try a pure bonus (not followed by 'd')
         const pureBonus = remaining.match(/^([+-]?\d+)(?![d\d])/);
         if (pureBonus) {
           bonusAccumulator += parseInt(pureBonus[1]);
@@ -1170,11 +1188,9 @@
           continue;
         }
 
-        // Nothing matched — skip one character to guarantee progress
         remaining = remaining.slice(1);
       }
 
-      // Apply any accumulated bonus to the last group
       if (bonusAccumulator !== 0 && this.groups.length > 0) {
         const last = this.groups[this.groups.length - 1];
         last.bonus = (last.bonus || 0) + bonusAccumulator;
@@ -1187,7 +1203,7 @@
     }
 
     // ============================================================
-    // 4k. UI UPDATES
+    // 5k. UI UPDATES
     // ============================================================
     _updateOutput() {
       const notation = this.getNotation();
@@ -1208,7 +1224,7 @@
     }
 
     // ============================================================
-    // 4l. POPUP POSITIONING
+    // 5l. POPUP POSITIONING
     // ============================================================
     _positionPopup() {
       if (!this.targetInput || !this.popupContainer) return;
@@ -1224,16 +1240,16 @@
 
       let left = rect.left + (rect.width - popupW) / 2;
       left = Math.max(10, Math.min(left, winW - popupW - 10));
-      let top = rect.bottom + 5;
+      let top = rect.bottom + 8;
       if (top + popupH > winH - 10) {
-        top = rect.top - popupH - 5;
+        top = rect.top - popupH - 8;
       }
       popup.style.left = left + 'px';
       popup.style.top = top + 'px';
     }
 
     // ============================================================
-    // 4m. STYLES
+    // 5m. STYLES
     // ============================================================
     _applyStyles(isPopup) {
       const target = isPopup ? this.popupContainer : this.container;
@@ -1243,118 +1259,292 @@
     }
 
     _getStyles(isPopup) {
+      const c = this._resolvePalette();
+
       const base = `
+        /* ---------- THEME VARIABLES (all from resolved palette) ---------- */
+        .die-builder,
+        .die-builder-popup {
+          --db-font: ${c.fontFamily};
+          --db-primary: ${c.primary};
+          --db-primary-hover: ${c.primaryHover};
+          --db-primary-ring: ${c.primaryRing};
+          --db-success: ${c.success};
+          --db-danger: ${c.danger};
+          --db-warning: ${c.warning};
+          --db-bg: ${c.background};
+          --db-surface: ${c.surface};
+          --db-surface-hover: ${c.surfaceHover};
+          --db-text: ${c.text};
+          --db-text-muted: ${c.textMuted};
+          --db-text-subtle: ${c.textSubtle};
+          --db-border: ${c.border};
+          --db-border-hover: ${c.borderHover};
+          --db-border-subtle: ${c.borderSubtle};
+          --db-input-bg: ${c.inputBg};
+          --db-shadow: ${c.shadow};
+        }
+
+        /* ---------- BASE ---------- */
         .die-builder {
-          font-family: var(--db-font, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif);
-          padding: 16px;
-          background: var(--db-bg, #fff);
-          color: var(--db-text, #333);
-          border-radius: 8px;
-          max-width: 100%;
+          font-family: var(--db-font);
+          font-size: 13px;
+          line-height: 1.5;
+          color: var(--db-text);
+          background: var(--db-bg);
+          -webkit-font-smoothing: antialiased;
+          -moz-osx-font-smoothing: grayscale;
           box-sizing: border-box;
         }
+        .die-builder *,
+        .die-builder *::before,
+        .die-builder *::after { box-sizing: border-box; }
+
+        /* ---------- HEADER ---------- */
         .db-header {
           display: flex;
-          justify-content: space-between;
           align-items: center;
-          margin-bottom: 16px;
-          flex-wrap: wrap;
-          gap: 8px;
+          justify-content: space-between;
+          gap: 12px;
+          padding-bottom: 14px;
+          margin-bottom: 18px;
+          border-bottom: 1px solid var(--db-border-subtle);
         }
-        .db-header h3 { margin: 0; font-size: 1.2rem; }
-        .db-header-actions { display: flex; gap: 6px; align-items: center; }
-        .db-help-btn, .db-close-btn {
-          background: none;
+        .db-header h3 {
+          margin: 0;
+          font-size: 14px;
+          font-weight: 600;
+          letter-spacing: -0.01em;
+          color: var(--db-text);
+        }
+        .db-header-actions {
+          display: flex;
+          align-items: center;
+          gap: 2px;
+        }
+
+        /* ---------- ICON BUTTONS ---------- */
+        .db-help-btn,
+        .db-close-btn {
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          width: 28px;
+          height: 28px;
+          padding: 0;
           border: none;
-          font-size: 20px;
+          background: transparent;
+          color: var(--db-text-muted);
+          font-size: 13px;
+          font-weight: 500;
+          font-family: inherit;
+          border-radius: 6px;
           cursor: pointer;
-          color: var(--db-text-muted, #888);
-          padding: 0 4px;
+          transition: background 150ms ease, color 150ms ease;
+          line-height: 1;
         }
-        .db-help-btn:hover { color: var(--db-primary, #4a90d9); }
-        .db-close-btn:hover { color: var(--db-danger, #e74c3c); }
-        .db-manual { display: flex; gap: 8px; margin-bottom: 12px; }
+        .db-help-btn:hover,
+        .db-close-btn:hover {
+          background: var(--db-surface-hover);
+          color: var(--db-text);
+        }
+        .db-help-btn:hover { color: var(--db-primary); }
+        .db-close-btn:hover { color: var(--db-danger); }
+
+        /* ---------- MANUAL INPUT ---------- */
+        .db-manual {
+          display: flex;
+          gap: 8px;
+          margin-bottom: 16px;
+        }
         .db-manual input {
           flex: 1;
-          padding: 6px 12px;
-          border: 1px solid var(--db-border, #ddd);
-          border-radius: 4px;
-          background: var(--db-input-bg, #fff);
-          color: var(--db-text, #333);
+          padding: 8px 12px;
+          font-size: 13px;
+          font-family: inherit;
+          color: var(--db-text);
+          background: var(--db-input-bg);
+          border: 1px solid var(--db-border);
+          border-radius: 8px;
+          transition: border-color 150ms ease, box-shadow 150ms ease;
+          outline: none;
+        }
+        .db-manual input::placeholder { color: var(--db-text-subtle); }
+        .db-manual input:hover { border-color: var(--db-border-hover); }
+        .db-manual input:focus {
+          border-color: var(--db-primary);
+          box-shadow: 0 0 0 3px var(--db-primary-ring);
         }
         .db-manual button {
-          padding: 6px 14px;
-          border: none;
-          border-radius: 4px;
-          background: var(--db-primary, #4a90d9);
+          padding: 8px 16px;
+          font-size: 13px;
+          font-weight: 500;
+          font-family: inherit;
           color: white;
+          background: var(--db-primary);
+          border: none;
+          border-radius: 8px;
           cursor: pointer;
+          transition: background 150ms ease;
         }
+        .db-manual button:hover { background: var(--db-primary-hover); }
+
+        /* ---------- HELP PANEL ---------- */
         .db-help-panel {
-          background: var(--db-surface, #f5f5f5);
-          border-radius: 4px;
-          padding: 12px;
-          margin-bottom: 12px;
-          max-height: 300px;
+          background: var(--db-surface);
+          border: 1px solid var(--db-border-subtle);
+          border-radius: 10px;
+          padding: 16px;
+          margin-bottom: 16px;
+          max-height: 320px;
           overflow-y: auto;
-          border: 1px solid var(--db-border, #ddd);
+          animation: db-fade-in 180ms ease;
         }
         .db-help-header {
           display: flex;
+          align-items: center;
           justify-content: space-between;
-          font-weight: bold;
-          margin-bottom: 8px;
-        }
-        .db-help-close {
-          background: none;
-          border: none;
-          cursor: pointer;
-          color: var(--db-primary, #4a90d9);
-        }
-        .db-help-content { font-size: 0.9rem; }
-        .db-help-category { margin-bottom: 10px; }
-        .db-help-item {
-          display: flex;
-          gap: 12px;
-          padding: 4px 0;
-          border-bottom: 1px solid var(--db-border, #eee);
-          flex-wrap: wrap;
-        }
-        .db-help-rule { font-weight: 600; min-width: 120px; }
-        .db-help-desc { flex: 1; color: var(--db-text-muted, #666); }
-        .db-help-example { font-family: monospace; color: var(--db-primary, #4a90d9); }
-        .db-form {
-          display: grid;
-          grid-template-columns: 1fr 2fr 1fr 0.8fr;
-          gap: 12px;
-          padding: 12px;
-          background: var(--db-surface, #f5f5f5);
-          border-radius: 6px;
+          font-size: 12px;
+          font-weight: 600;
+          letter-spacing: 0.02em;
+          text-transform: uppercase;
+          color: var(--db-text-muted);
           margin-bottom: 12px;
         }
-        .db-col label {
-          display: block;
-          font-weight: 600;
-          font-size: 0.85rem;
-          margin-bottom: 4px;
-          color: var(--db-text, #333);
-        }
-        .db-field { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
-        .db-field input, .db-field select {
+        .db-help-close {
+          background: transparent;
+          border: none;
+          color: var(--db-primary);
+          font-size: 11px;
+          font-family: inherit;
+          font-weight: 500;
+          cursor: pointer;
+          text-transform: none;
+          letter-spacing: 0;
           padding: 4px 8px;
-          border: 1px solid var(--db-border, #ccc);
-          border-radius: 4px;
-          background: var(--db-input-bg, #fff);
-          color: var(--db-text, #333);
-          font-size: 14px;
+          border-radius: 6px;
+          transition: background 150ms ease;
         }
-        .db-qty { width: 60px; }
-        .db-die-type { width: 70px; }
-        .db-bonus { width: 70px; }
-        .db-rule-mod { width: 50px; }
-        .db-limit-val { width: 50px; }
-        .db-limit-op { width: 50px; }
-        .db-rule-selector { min-width: 120px; flex: 1; }
+        .db-help-close:hover { background: var(--db-surface-hover); }
+        .db-help-content { font-size: 12.5px; }
+        .db-help-category { margin-bottom: 14px; }
+        .db-help-category:last-child { margin-bottom: 0; }
+        .db-help-category > strong {
+          display: block;
+          font-size: 11px;
+          font-weight: 600;
+          text-transform: uppercase;
+          letter-spacing: 0.06em;
+          color: var(--db-text-muted);
+          margin-bottom: 6px;
+        }
+        .db-help-item {
+          display: grid;
+          grid-template-columns: 1fr 2fr auto;
+          gap: 12px;
+          align-items: baseline;
+          padding: 6px 0;
+          border-bottom: 1px solid var(--db-border-subtle);
+        }
+        .db-help-item:last-child { border-bottom: none; }
+        .db-help-rule {
+          font-weight: 500;
+          color: var(--db-text);
+          font-size: 12.5px;
+        }
+        .db-help-desc {
+          color: var(--db-text-muted);
+          font-size: 12px;
+        }
+        .db-help-example {
+          font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+          font-size: 11.5px;
+          color: var(--db-primary);
+          background: var(--db-primary-ring);
+          padding: 2px 6px;
+          border-radius: 4px;
+          white-space: nowrap;
+        }
+
+        /* ---------- FORM LAYOUT ---------- */
+        .db-form {
+          display: grid;
+          grid-template-columns: minmax(140px, 1fr) minmax(220px, 2fr) minmax(90px, 0.6fr) minmax(90px, 0.6fr);
+          gap: 16px;
+          padding: 4px 0 18px;
+          border-bottom: 1px solid var(--db-border-subtle);
+          margin-bottom: 18px;
+          align-items: start;
+        }
+
+        .db-col { min-width: 0; }
+        .db-col > label {
+          display: block;
+          font-size: 10.5px;
+          font-weight: 600;
+          text-transform: uppercase;
+          letter-spacing: 0.08em;
+          color: var(--db-text-muted);
+          margin-bottom: 6px;
+        }
+        .db-field {
+          display: flex;
+          gap: 6px;
+          flex-wrap: wrap;
+          align-items: center;
+        }
+
+        /* ---------- UNIFIED INPUT STYLING ---------- */
+        .db-field input,
+        .db-field select,
+        .db-rule-selector,
+        .db-rule-mod,
+        .db-limit-val,
+        .db-limit-op {
+          font-family: inherit;
+          font-size: 13px;
+          line-height: 1.4;
+          padding: 7px 10px;
+          color: var(--db-text);
+          background: var(--db-input-bg);
+          border: 1px solid var(--db-border);
+          border-radius: 7px;
+          transition: border-color 150ms ease, box-shadow 150ms ease, background 150ms ease;
+          outline: none;
+          box-sizing: border-box;
+        }
+        .db-field input:hover,
+        .db-field select:hover,
+        .db-rule-selector:hover,
+        .db-rule-mod:hover,
+        .db-limit-val:hover,
+        .db-limit-op:hover {
+          border-color: var(--db-border-hover);
+        }
+        .db-field input:focus,
+        .db-field select:focus,
+        .db-rule-selector:focus,
+        .db-rule-mod:focus,
+        .db-limit-val:focus,
+        .db-limit-op:focus {
+          border-color: var(--db-primary);
+          box-shadow: 0 0 0 3px var(--db-primary-ring);
+        }
+
+        .db-qty { width: 64px; text-align: center; }
+        .db-die-type { width: 76px; }
+        .db-bonus { width: 76px; text-align: center; }
+        .db-rule-mod { width: 56px; text-align: center; }
+        .db-limit-val { width: 56px; text-align: center; }
+        .db-limit-op {
+          width: 52px;
+          text-align: center;
+          padding-left: 6px;
+          padding-right: 6px;
+          cursor: pointer;
+        }
+
+        /* ---------- RULES CONTAINER ---------- */
         .db-rules-container {
           display: flex;
           flex-direction: column;
@@ -1364,130 +1554,318 @@
           display: flex;
           align-items: center;
           gap: 6px;
-          background: var(--db-bg, #fff);
-          padding: 4px 6px;
-          border-radius: 4px;
-          border: 1px solid var(--db-border, #ddd);
+          padding: 4px;
+          background: var(--db-surface);
+          border: 1px solid var(--db-border-subtle);
+          border-radius: 8px;
+          transition: border-color 150ms ease;
         }
+        .db-rule-entry:hover { border-color: var(--db-border); }
         .db-rule-fields {
           display: flex;
           flex-wrap: wrap;
           align-items: center;
-          gap: 4px;
+          gap: 6px;
           flex: 1;
+          min-width: 0;
+        }
+        .db-rule-selector {
+          flex: 1;
+          min-width: 140px;
+          cursor: pointer;
         }
         .db-rule-remove {
-          background: none;
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          width: 26px;
+          height: 26px;
+          padding: 0;
+          background: transparent;
           border: none;
-          color: var(--db-danger, #e74c3c);
+          border-radius: 6px;
+          color: var(--db-text-subtle);
+          font-size: 12px;
+          font-family: inherit;
           cursor: pointer;
-          font-size: 16px;
-          padding: 0 4px;
+          transition: background 150ms ease, color 150ms ease;
+          flex-shrink: 0;
+        }
+        .db-rule-remove:hover {
+          background: rgba(220, 38, 38, 0.1);
+          color: var(--db-danger);
         }
         .db-add-rule-btn {
-          background: none;
-          border: 1px dashed var(--db-border, #ccc);
-          border-radius: 4px;
-          padding: 4px 8px;
-          cursor: pointer;
-          font-size: 0.85rem;
-          color: var(--db-text-muted, #888);
-        }
-        .db-add-rule-btn:hover { background: var(--db-surface-hover, #e9e9e9); }
-        .db-no-mod { color: var(--db-text-muted, #999); font-size: 0.85rem; }
-        .db-add-btn {
+          align-self: flex-start;
           padding: 6px 12px;
-          background: var(--db-primary, #4a90d9);
-          color: white;
-          border: none;
-          border-radius: 4px;
+          font-size: 12px;
+          font-weight: 500;
+          font-family: inherit;
+          color: var(--db-text-muted);
+          background: transparent;
+          border: 1px dashed var(--db-border);
+          border-radius: 7px;
           cursor: pointer;
-          font-weight: 600;
-          width: 100%;
-          margin-top: 4px;
+          transition: all 150ms ease;
         }
-        .db-add-btn:hover { background: var(--db-primary-hover, #3a7bc8); }
+        .db-add-rule-btn:hover {
+          color: var(--db-primary);
+          border-color: var(--db-primary);
+          background: var(--db-primary-ring);
+          border-style: solid;
+        }
+        .db-no-mod {
+          color: var(--db-text-subtle);
+          font-size: 12px;
+          font-style: italic;
+          padding: 7px 4px;
+        }
+
+        /* ---------- ADD GROUP BUTTON ---------- */
+        .db-add-btn {
+          width: 100%;
+          padding: 9px 14px;
+          font-size: 13px;
+          font-weight: 500;
+          font-family: inherit;
+          color: white;
+          background: var(--db-primary);
+          border: none;
+          border-radius: 8px;
+          cursor: pointer;
+          transition: background 150ms ease, transform 100ms ease, box-shadow 150ms ease;
+          box-shadow: 0 1px 2px rgba(15, 23, 42, 0.08);
+          white-space: nowrap;
+        }
+        .db-add-btn:hover {
+          background: var(--db-primary-hover);
+          box-shadow: 0 2px 4px rgba(15, 23, 42, 0.12);
+        }
+        .db-add-btn:active {
+          transform: translateY(1px);
+          box-shadow: 0 1px 2px rgba(15, 23, 42, 0.08);
+        }
+
+        /* ---------- GROUPS LIST ---------- */
         .db-groups-header {
-          padding: 4px 0;
-          font-size: 0.9rem;
-          color: var(--db-text-muted, #888);
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          font-size: 10.5px;
+          font-weight: 600;
+          text-transform: uppercase;
+          letter-spacing: 0.08em;
+          color: var(--db-text-muted);
+          margin-bottom: 8px;
+        }
+        .db-groups-count {
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          min-width: 20px;
+          height: 20px;
+          padding: 0 6px;
+          font-size: 10.5px;
+          font-weight: 600;
+          letter-spacing: 0;
+          color: var(--db-text-muted);
+          background: var(--db-surface);
+          border-radius: 10px;
         }
         .db-groups {
-          min-height: 50px;
-          margin-bottom: 12px;
+          display: flex;
+          flex-direction: column;
+          gap: 4px;
+          min-height: 44px;
+          margin-bottom: 16px;
         }
         .db-empty {
           text-align: center;
-          color: var(--db-text-muted, #999);
-          padding: 16px;
+          color: var(--db-text-subtle);
+          font-size: 12.5px;
+          padding: 20px 12px;
+          border: 1px dashed var(--db-border-subtle);
+          border-radius: 8px;
         }
         .db-group-item {
           display: flex;
-          justify-content: space-between;
           align-items: center;
-          padding: 6px 10px;
-          margin-bottom: 4px;
-          background: var(--db-surface, #f9f9f9);
-          border-radius: 4px;
-          border-left: 3px solid var(--db-primary, #4a90d9);
+          justify-content: space-between;
+          gap: 12px;
+          padding: 8px 12px;
+          background: var(--db-surface);
+          border: 1px solid transparent;
+          border-radius: 8px;
+          transition: border-color 150ms ease, background 150ms ease;
         }
-        .db-group-item.invalid { border-left-color: var(--db-danger, #e74c3c); opacity: 0.6; }
-        .db-group-info { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; flex: 1; }
-        .db-group-notation { font-family: monospace; font-weight: 600; font-size: 14px; }
-        .db-group-desc { font-size: 12px; color: var(--db-text-muted, #888); }
-        .db-group-actions { display: flex; gap: 4px; }
+        .db-group-item:hover { border-color: var(--db-border); }
+        .db-group-item.invalid { opacity: 0.55; }
+        .db-group-item.invalid .db-group-notation { color: var(--db-danger); }
+        .db-group-info {
+          display: flex;
+          align-items: baseline;
+          gap: 12px;
+          flex-wrap: wrap;
+          min-width: 0;
+          flex: 1;
+        }
+        .db-group-notation {
+          font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+          font-size: 13px;
+          font-weight: 500;
+          color: var(--db-text);
+          letter-spacing: -0.01em;
+        }
+        .db-group-desc {
+          font-size: 11px;
+          color: var(--db-text-subtle);
+          text-transform: uppercase;
+          letter-spacing: 0.04em;
+        }
+        .db-group-actions {
+          display: flex;
+          gap: 2px;
+          opacity: 0.6;
+          transition: opacity 150ms ease;
+        }
+        .db-group-item:hover .db-group-actions { opacity: 1; }
         .db-group-actions button {
-          background: none;
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          width: 26px;
+          height: 26px;
+          padding: 0;
+          background: transparent;
           border: none;
+          border-radius: 6px;
+          color: var(--db-text-muted);
+          font-size: 12px;
+          font-family: inherit;
           cursor: pointer;
-          font-size: 16px;
-          padding: 0 4px;
+          transition: background 150ms ease, color 150ms ease;
         }
-        .db-group-actions .db-remove-btn:hover { color: var(--db-danger, #e74c3c); }
-        .db-group-actions .db-edit-btn:hover { color: var(--db-primary, #4a90d9); }
+        .db-group-actions .db-remove-btn:hover {
+          background: rgba(220, 38, 38, 0.1);
+          color: var(--db-danger);
+        }
+        .db-group-actions .db-edit-btn:hover {
+          background: var(--db-primary-ring);
+          color: var(--db-primary);
+        }
+
+        /* ---------- FOOTER ---------- */
         .db-footer {
           display: flex;
-          justify-content: space-between;
           align-items: center;
-          padding-top: 8px;
-          border-top: 1px solid var(--db-border, #ddd);
+          justify-content: space-between;
+          gap: 12px;
+          padding-top: 14px;
+          border-top: 1px solid var(--db-border-subtle);
           flex-wrap: wrap;
+        }
+        .db-preview {
+          font-size: 12px;
+          color: var(--db-text-muted);
+          display: flex;
+          align-items: center;
           gap: 8px;
+          min-width: 0;
+          flex: 1;
         }
-        .db-preview { font-size: 14px; }
-        .db-preview strong { font-family: monospace; font-size: 16px; color: var(--db-primary, #4a90d9); }
-        .db-actions { display: flex; gap: 6px; flex-wrap: wrap; }
-        .db-copy-btn, .db-clear-btn, .db-accept-btn {
-          padding: 4px 12px;
-          border: none;
-          border-radius: 4px;
-          cursor: pointer;
+        .db-preview strong {
+          font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
           font-size: 13px;
+          font-weight: 500;
+          color: var(--db-text);
+          background: var(--db-surface);
+          padding: 4px 10px;
+          border-radius: 6px;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+          max-width: 100%;
         }
-        .db-copy-btn { background: var(--db-primary, #4a90d9); color: white; }
-        .db-copy-btn:hover { background: var(--db-primary-hover, #3a7bc8); }
-        .db-clear-btn { background: var(--db-danger, #e74c3c); color: white; }
-        .db-clear-btn:hover { background: #c0392b; }
-        .db-accept-btn { background: var(--db-success, #27ae60); color: white; font-weight: 600; }
-        .db-accept-btn:hover { opacity: 0.9; }
-        .db-help {
-          font-size: 0.7rem;
-          color: var(--db-text-muted, #999);
-          margin-top: 2px;
-          min-height: 16px;
+        .db-actions {
+          display: flex;
+          gap: 8px;
+          flex-wrap: wrap;
+          align-items: center;
         }
-        @media (max-width: 700px) {
-          .db-form { grid-template-columns: 1fr 1fr; }
-          .db-col-actions { grid-column: span 2; }
-          .db-field input, .db-field select { font-size: 16px; padding: 6px 8px; }
-          .db-rule-selector { min-width: 80px; }
-          .db-header h3 { font-size: 1rem; }
-          .db-manual input { width: 100%; }
+        .db-copy-btn,
+        .db-clear-btn {
+          padding: 7px 14px;
+          font-size: 12.5px;
+          font-weight: 500;
+          font-family: inherit;
+          border-radius: 7px;
+          cursor: pointer;
+          transition: all 150ms ease;
+          border: 1px solid var(--db-border);
+          background: var(--db-bg);
+          color: var(--db-text-muted);
         }
-        @media (max-width: 450px) {
+        .db-copy-btn:hover,
+        .db-clear-btn:hover {
+          color: var(--db-text);
+          border-color: var(--db-border-hover);
+          background: var(--db-surface);
+        }
+        .db-clear-btn:hover {
+          color: var(--db-danger);
+          border-color: rgba(220, 38, 38, 0.3);
+          background: rgba(220, 38, 38, 0.06);
+        }
+        .db-accept-btn {
+          padding: 7px 18px;
+          font-size: 12.5px;
+          font-weight: 600;
+          font-family: inherit;
+          color: white;
+          background: var(--db-primary);
+          border: none;
+          border-radius: 7px;
+          cursor: pointer;
+          transition: background 150ms ease, box-shadow 150ms ease;
+          box-shadow: 0 1px 2px rgba(15, 23, 42, 0.08);
+        }
+        .db-accept-btn:hover {
+          background: var(--db-primary-hover);
+          box-shadow: 0 2px 4px rgba(15, 23, 42, 0.12);
+        }
+
+        /* ---------- ANIMATIONS ---------- */
+        @keyframes db-fade-in {
+          from { opacity: 0; transform: translateY(-2px); }
+          to   { opacity: 1; transform: translateY(0); }
+        }
+        @keyframes db-popup-in {
+          from { opacity: 0; transform: translateY(-6px) scale(0.985); }
+          to   { opacity: 1; transform: translateY(0) scale(1); }
+        }
+
+        /* ---------- RESPONSIVE ---------- */
+        @media (max-width: 760px) {
+          .db-form {
+            grid-template-columns: 1fr 1fr;
+            gap: 14px;
+          }
+          .db-col-rules { grid-column: 1 / -1; }
+          .db-col-actions { grid-column: 1 / -1; }
+        }
+        @media (max-width: 520px) {
           .db-form { grid-template-columns: 1fr; }
-          .db-col-actions { grid-column: span 1; }
-          .die-builder-popup { width: 95vw !important; left: 2.5vw !important; }
+          .db-col-rules,
+          .db-col-actions { grid-column: 1; }
+          .db-field input,
+          .db-field select,
+          .db-rule-selector,
+          .db-rule-mod,
+          .db-limit-val,
+          .db-limit-op { font-size: 16px; } /* prevent iOS zoom */
+          .db-help-item { grid-template-columns: 1fr; gap: 4px; }
+          .db-help-example { justify-self: start; }
+          .db-preview { flex-direction: column; align-items: flex-start; gap: 4px; }
         }
       `;
 
@@ -1495,20 +1873,35 @@
         .die-builder-popup {
           position: fixed;
           z-index: 9999;
-          background: var(--db-bg, #fff);
-          border-radius: 8px;
-          box-shadow: 0 10px 40px var(--db-shadow, rgba(0,0,0,0.15));
-          border: 1px solid var(--db-border, #ddd);
-          padding: 12px;
+          padding: 22px;
+          background: var(--db-bg);
+          border: 1px solid var(--db-border-subtle);
+          border-radius: 14px;
+          box-shadow:
+            0 0 0 1px rgba(15, 23, 42, 0.02),
+            0 12px 24px -6px var(--db-shadow),
+            0 32px 64px -16px var(--db-shadow);
           max-height: 80vh;
           overflow-y: auto;
-          width: 80vw;
           box-sizing: border-box;
+          animation: db-popup-in 200ms cubic-bezier(0.16, 1, 0.3, 1);
+          font-family: var(--db-font);
+          color: var(--db-text);
         }
         .die-builder-popup .die-builder {
-          border: none;
           padding: 0;
+          border: none;
           background: transparent;
+          border-radius: 0;
+        }
+
+        @media (max-width: 760px) {
+          .die-builder-popup {
+            width: 95vw !important;
+            left: 2.5vw !important;
+            padding: 18px;
+            border-radius: 12px;
+          }
         }
       ` : '';
 
@@ -1516,7 +1909,7 @@
     }
 
     // ============================================================
-    // 4n. DESTROY
+    // 5n. DESTROY
     // ============================================================
     destroy() {
       this._eventListeners.forEach(({ el, event, handler }) => {
