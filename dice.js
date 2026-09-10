@@ -151,6 +151,48 @@ var DICE = (function() {
     }
 
     /**
+     * Converts an operator string (>, >=, <, <=, =) to a condition name.
+     */
+    function operatorToCondition(op) {
+        switch (op) {
+            case '>=': return 'greater-equal';
+            case '<=': return 'less-equal';
+            case '>':  return 'greater-than';
+            case '<':  return 'less-than';
+            case '=':  return 'equal';
+            default:   return null;
+        }
+    }
+
+    /**
+     * Compares a value against a threshold using the given condition name.
+     */
+    function compareValues(value, condition, threshold) {
+        switch (condition) {
+            case 'greater-than':  return value > threshold;
+            case 'greater-equal': return value >= threshold;
+            case 'less-than':     return value < threshold;
+            case 'less-equal':    return value <= threshold;
+            case 'equal':         return value === threshold;
+            default:              return false;
+        }
+    }
+
+    /**
+     * Renders a condition + threshold back to a short string (e.g. ">19", "=6").
+     */
+    function conditionToString(condition, threshold) {
+        switch (condition) {
+            case 'greater-than':  return '>' + threshold;
+            case 'greater-equal': return '>=' + threshold;
+            case 'less-than':     return '<' + threshold;
+            case 'less-equal':    return '<=' + threshold;
+            case 'equal':         return '=' + threshold;
+            default:              return '>' + threshold;
+        }
+    }
+
+    /**
      * Internal rendering and physics configuration.
      *
      * These values currently remain internal to the library. The longer-term
@@ -1053,12 +1095,15 @@ var DICE = (function() {
                 var rules = [];
                 var remaining = rulesStr;
 
-                // We'll parse sequentially using regex matches for each rule type
+                // Operator + number matcher (order matters: >= and <= before > and <)
+                var opNumRegex = /^(>=|<=|>|<|=)(\d+)/;
+
                 while (remaining.length > 0) {
                     var matched = false;
+                    var m;
 
-                    // khN, klN, dhN, dlN
-                    var m = remaining.match(/^(kh|kl|dh|dl)(\d+)/i);
+                    // -------- khN, klN, dhN, dlN (keep/drop) --------
+                    m = remaining.match(/^(kh|kl|dh|dl)(\d+)/i);
                     if (m) {
                         var ruleType = m[1].toLowerCase();
                         var countNum = parseInt(m[2], 10);
@@ -1066,7 +1111,6 @@ var DICE = (function() {
                             ret.error = true;
                             ret.errorCode = 'RULE_COUNT_EXCEEDS_DICE';
                             ret.errorMessage = DICE_ERRORS.RULE_COUNT_EXCEEDS_DICE + ' (' + countNum + ' > ' + count + ')';
-                            // Still continue, but mark error
                         }
                         var ruleMap = {
                             'kh': 'keep-highest',
@@ -1074,211 +1118,281 @@ var DICE = (function() {
                             'dh': 'drop-highest',
                             'dl': 'drop-lowest'
                         };
-                        rules.push({
-                            type: ruleMap[ruleType],
-                            count: countNum
-                        });
+                        rules.push({ type: ruleMap[ruleType], count: countNum });
                         remaining = remaining.substring(m[0].length);
                         matched = true;
                         continue;
                     }
 
-                    // !! or !!>N (compounding explode)
-                    m = remaining.match(/^!!>(?:\s*)(\d+)/);
-                    if (m) {
-                        rules.push({
-                            type: 'explode-compounding',
-                            threshold: parseInt(m[1], 10),
-                            condition: 'greater-than'
-                        });
-                        remaining = remaining.substring(m[0].length);
-                        matched = true;
-                        continue;
-                    }
-                    m = remaining.match(/^!!/);
-                    if (m) {
-                        rules.push({
-                            type: 'explode-compounding',
-                            threshold: 'max'
-                        });
-                        remaining = remaining.substring(m[0].length);
-                        matched = true;
-                        continue;
-                    }
-
-                    // ! or !>N (explode)
-                    m = remaining.match(/^!>(?:\s*)(\d+)/);
-                    if (m) {
-                        rules.push({
-                            type: 'explode',
-                            threshold: parseInt(m[1], 10),
-                            condition: 'greater-than'
-                        });
-                        remaining = remaining.substring(m[0].length);
-                        matched = true;
-                        continue;
-                    }
-                    m = remaining.match(/^!/);
-                    if (m) {
-                        rules.push({
-                            type: 'explode',
-                            threshold: 'max'
-                        });
-                        remaining = remaining.substring(m[0].length);
+                    // -------- !! , !!<op>N , !!N (compounding explode) --------
+                    if (remaining.startsWith('!!')) {
+                        var rest = remaining.substring(2);
+                        var opMatch = rest.match(opNumRegex);
+                        if (opMatch) {
+                            rules.push({
+                                type: 'explode-compounding',
+                                threshold: parseInt(opMatch[2], 10),
+                                condition: operatorToCondition(opMatch[1])
+                            });
+                            remaining = rest.substring(opMatch[0].length);
+                        } else {
+                            var numMatch = rest.match(/^(\d+)/);
+                            if (numMatch) {
+                                rules.push({
+                                    type: 'explode-compounding',
+                                    threshold: parseInt(numMatch[1], 10),
+                                    condition: 'greater-equal'
+                                });
+                                remaining = rest.substring(numMatch[0].length);
+                            } else {
+                                rules.push({ type: 'explode-compounding', threshold: 'max' });
+                                remaining = rest;
+                            }
+                        }
                         matched = true;
                         continue;
                     }
 
-                    // p (penetrating)
-                    m = remaining.match(/^p/);
-                    if (m) {
-                        rules.push({
-                            type: 'penetrate'
-                        });
-                        remaining = remaining.substring(m[0].length);
+                    // -------- ! , !<op>N , !N (explode) --------
+                    if (remaining.startsWith('!')) {
+                        var rest = remaining.substring(1);
+                        var opMatch = rest.match(opNumRegex);
+                        if (opMatch) {
+                            rules.push({
+                                type: 'explode',
+                                threshold: parseInt(opMatch[2], 10),
+                                condition: operatorToCondition(opMatch[1])
+                            });
+                            remaining = rest.substring(opMatch[0].length);
+                        } else {
+                            var numMatch = rest.match(/^(\d+)/);
+                            if (numMatch) {
+                                rules.push({
+                                    type: 'explode',
+                                    threshold: parseInt(numMatch[1], 10),
+                                    condition: 'greater-equal'
+                                });
+                                remaining = rest.substring(numMatch[0].length);
+                            } else {
+                                rules.push({ type: 'explode', threshold: 'max' });
+                                remaining = rest;
+                            }
+                        }
                         matched = true;
                         continue;
                     }
 
-                    // rN or r>N (reroll until)
-                    m = remaining.match(/^r>(?:\s*)(\d+)/);
-                    if (m) {
-                        rules.push({
-                            type: 'reroll',
-                            threshold: parseInt(m[1], 10),
-                            condition: 'greater-than',
-                            once: false
-                        });
-                        remaining = remaining.substring(m[0].length);
-                        matched = true;
-                        continue;
-                    }
-                    m = remaining.match(/^r(\d+)/);
-                    if (m) {
-                        rules.push({
-                            type: 'reroll',
-                            threshold: parseInt(m[1], 10),
-                            condition: 'less-than',
-                            once: false
-                        });
-                        remaining = remaining.substring(m[0].length);
+                    // -------- p (penetrating) --------
+                    if (remaining.startsWith('p')) {
+                        rules.push({ type: 'penetrate' });
+                        remaining = remaining.substring(1);
                         matched = true;
                         continue;
                     }
 
-                    // roN or ro>N (reroll once)
-                    m = remaining.match(/^ro>(?:\s*)(\d+)/);
-                    if (m) {
-                        rules.push({
-                            type: 'reroll',
-                            threshold: parseInt(m[1], 10),
-                            condition: 'greater-than',
-                            once: true
-                        });
-                        remaining = remaining.substring(m[0].length);
-                        matched = true;
-                        continue;
-                    }
-                    m = remaining.match(/^ro(\d+)/);
-                    if (m) {
-                        rules.push({
-                            type: 'reroll',
-                            threshold: parseInt(m[1], 10),
-                            condition: 'less-than',
-                            once: true
-                        });
-                        remaining = remaining.substring(m[0].length);
-                        matched = true;
-                        continue;
+                    // -------- ro<op>N , roN (reroll once) --------
+                    if (remaining.startsWith('ro')) {
+                        var rest = remaining.substring(2);
+                        var opMatch = rest.match(opNumRegex);
+                        if (opMatch) {
+                            rules.push({
+                                type: 'reroll',
+                                threshold: parseInt(opMatch[2], 10),
+                                condition: operatorToCondition(opMatch[1]),
+                                once: true
+                            });
+                            remaining = rest.substring(opMatch[0].length);
+                            matched = true;
+                            continue;
+                        }
+                        var numMatch = rest.match(/^(\d+)/);
+                        if (numMatch) {
+                            rules.push({
+                                type: 'reroll',
+                                threshold: parseInt(numMatch[1], 10),
+                                condition: 'less-than',
+                                once: true
+                            });
+                            remaining = rest.substring(numMatch[0].length);
+                            matched = true;
+                            continue;
+                        }
                     }
 
-                    // er (explode & reroll 1s) – we can treat as two rules: reroll 1 and explode on max
-                    m = remaining.match(/^er/);
-                    if (m) {
+                    // -------- r<op>N , rN (reroll until success) --------
+                    if (remaining.startsWith('r') && !remaining.startsWith('ro')) {
+                        var rest = remaining.substring(1);
+                        var opMatch = rest.match(opNumRegex);
+                        if (opMatch) {
+                            rules.push({
+                                type: 'reroll',
+                                threshold: parseInt(opMatch[2], 10),
+                                condition: operatorToCondition(opMatch[1]),
+                                once: false
+                            });
+                            remaining = rest.substring(opMatch[0].length);
+                            matched = true;
+                            continue;
+                        }
+                        var numMatch = rest.match(/^(\d+)/);
+                        if (numMatch) {
+                            rules.push({
+                                type: 'reroll',
+                                threshold: parseInt(numMatch[1], 10),
+                                condition: 'less-than',
+                                once: false
+                            });
+                            remaining = rest.substring(numMatch[0].length);
+                            matched = true;
+                            continue;
+                        }
+                    }
+
+                    // -------- er (explode & reroll 1s) --------
+                    if (remaining.startsWith('er')) {
                         rules.push({
                             type: 'reroll',
                             threshold: 1,
                             condition: 'less-than',
                             once: false
                         });
-                        rules.push({
-                            type: 'explode',
-                            threshold: 'max'
-                        });
-                        remaining = remaining.substring(m[0].length);
+                        rules.push({ type: 'explode', threshold: 'max' });
+                        remaining = remaining.substring(2);
                         matched = true;
                         continue;
                     }
 
-                    // sa / sd (sort)
-                    m = remaining.match(/^sa/);
-                    if (m) {
+                    // -------- sa / sd (sort) --------
+                    if (remaining.startsWith('sa')) {
                         rules.push({ type: 'sort-ascending' });
-                        remaining = remaining.substring(m[0].length);
+                        remaining = remaining.substring(2);
                         matched = true;
                         continue;
                     }
-                    m = remaining.match(/^sd/);
-                    if (m) {
+                    if (remaining.startsWith('sd')) {
                         rules.push({ type: 'sort-descending' });
-                        remaining = remaining.substring(m[0].length);
+                        remaining = remaining.substring(2);
                         matched = true;
                         continue;
                     }
 
-                    // cs>N (critical success)
-                    m = remaining.match(/^cs>(?:\s*)(\d+)/);
-                    if (m) {
-                        rules.push({
-                            type: 'critical-success',
-                            threshold: parseInt(m[1], 10)
-                        });
-                        remaining = remaining.substring(m[0].length);
-                        matched = true;
-                        continue;
+                    // -------- cs<op>N , csN (critical success) --------
+                    if (remaining.startsWith('cs')) {
+                        var rest = remaining.substring(2);
+                        var opMatch = rest.match(opNumRegex);
+                        if (opMatch) {
+                            rules.push({
+                                type: 'critical-success',
+                                threshold: parseInt(opMatch[2], 10),
+                                condition: operatorToCondition(opMatch[1])
+                            });
+                            remaining = rest.substring(opMatch[0].length);
+                            matched = true;
+                            continue;
+                        }
+                        var numMatch = rest.match(/^(\d+)/);
+                        if (numMatch) {
+                            rules.push({
+                                type: 'critical-success',
+                                threshold: parseInt(numMatch[1], 10),
+                                condition: 'greater-than'
+                            });
+                            remaining = rest.substring(numMatch[0].length);
+                            matched = true;
+                            continue;
+                        }
                     }
 
-                    // cf<N (critical failure)
-                    m = remaining.match(/^cf<(?:\s*)(\d+)/);
-                    if (m) {
-                        rules.push({
-                            type: 'critical-failure',
-                            threshold: parseInt(m[1], 10)
-                        });
-                        remaining = remaining.substring(m[0].length);
-                        matched = true;
-                        continue;
+                    // -------- cf<op>N , cfN (critical failure) --------
+                    if (remaining.startsWith('cf')) {
+                        var rest = remaining.substring(2);
+                        var opMatch = rest.match(opNumRegex);
+                        if (opMatch) {
+                            rules.push({
+                                type: 'critical-failure',
+                                threshold: parseInt(opMatch[2], 10),
+                                condition: operatorToCondition(opMatch[1])
+                            });
+                            remaining = rest.substring(opMatch[0].length);
+                            matched = true;
+                            continue;
+                        }
+                        var numMatch = rest.match(/^(\d+)/);
+                        if (numMatch) {
+                            rules.push({
+                                type: 'critical-failure',
+                                threshold: parseInt(numMatch[1], 10),
+                                condition: 'less-than'
+                            });
+                            remaining = rest.substring(numMatch[0].length);
+                            matched = true;
+                            continue;
+                        }
                     }
 
-                    // tN (target number – count successes)
-                    m = remaining.match(/^t(?:\s*)(\d+)/);
-                    if (m) {
-                        rules.push({
-                            type: 'target-number',
-                            threshold: parseInt(m[1], 10)
-                        });
-                        remaining = remaining.substring(m[0].length);
-                        matched = true;
-                        continue;
+                    // -------- t<op>N , tN (target number) --------
+                    if (remaining.startsWith('t')) {
+                        var rest = remaining.substring(1);
+                        var opMatch = rest.match(opNumRegex);
+                        if (opMatch) {
+                            rules.push({
+                                type: 'target-number',
+                                threshold: parseInt(opMatch[2], 10),
+                                condition: operatorToCondition(opMatch[1])
+                            });
+                            remaining = rest.substring(opMatch[0].length);
+                            matched = true;
+                            continue;
+                        }
+                        var numMatch = rest.match(/^(\d+)/);
+                        if (numMatch) {
+                            rules.push({
+                                type: 'target-number',
+                                threshold: parseInt(numMatch[1], 10),
+                                condition: 'greater-equal'
+                            });
+                            remaining = rest.substring(numMatch[0].length);
+                            matched = true;
+                            continue;
+                        }
                     }
 
-                    // fN (count failures)
-                    m = remaining.match(/^f(?:\s*)(\d+)/);
-                    if (m) {
-                        rules.push({
-                            type: 'failures',
-                            threshold: parseInt(m[1], 10)
-                        });
-                        remaining = remaining.substring(m[0].length);
-                        matched = true;
-                        continue;
+                    // -------- f<op>N , fN (failures) --------
+                    if (remaining.startsWith('f')) {
+                        var rest = remaining.substring(1);
+                        var opMatch = rest.match(opNumRegex);
+                        if (opMatch) {
+                            rules.push({
+                                type: 'failures',
+                                threshold: parseInt(opMatch[2], 10),
+                                condition: operatorToCondition(opMatch[1])
+                            });
+                            remaining = rest.substring(opMatch[0].length);
+                            matched = true;
+                            continue;
+                        }
+                        var numMatch = rest.match(/^(\d+)/);
+                        if (numMatch) {
+                            rules.push({
+                                type: 'failures',
+                                threshold: parseInt(numMatch[1], 10),
+                                condition: 'less-than'
+                            });
+                            remaining = rest.substring(numMatch[0].length);
+                            matched = true;
+                            continue;
+                        }
                     }
 
                     // If nothing matched, break to avoid infinite loop
                     if (!matched) {
                         ret.error = true;
                         ret.errorCode = 'INVALID_RULE';
-                        ret.errorMessage = DICE_ERRORS.INVALID_RULE + ' (unrecognised rule "' + remaining + '")';
+                        ret.errorMessage = DICE_ERRORS.INVALID_RULE +
+                            ' (unrecognised rule "' + remaining + '"). ' +
+                            'Expected one of: khN klN dhN dlN, ! !<op>N !N, !! !!<op>N !!N, p, ' +
+                            'r<op>N rN, ro<op>N roN, er, sa, sd, cs<op>N csN, cf<op>N cfN, ' +
+                            't<op>N tN, f<op>N fN (where <op> is one of >, >=, <, <=, =)';
                         console.warn('Dice Roll: Unrecognised rule suffix:', remaining);
                         break;
                     }
@@ -1370,28 +1484,32 @@ var DICE = (function() {
                             case 'drop-lowest': notation += 'dl' + rule.count; break;
                             case 'explode':
                                 if (rule.threshold === 'max') notation += '!';
-                                else notation += '!>' + rule.threshold;
+                                else notation += '!' + conditionToString(rule.condition || 'greater-than', rule.threshold);
                                 break;
                             case 'explode-compounding':
                                 if (rule.threshold === 'max') notation += '!!';
-                                else notation += '!!>' + rule.threshold;
+                                else notation += '!!' + conditionToString(rule.condition || 'greater-than', rule.threshold);
                                 break;
                             case 'penetrate': notation += 'p'; break;
                             case 'reroll':
-                                if (rule.once) {
-                                    if (rule.condition === 'less-than') notation += 'ro' + rule.threshold;
-                                    else notation += 'ro>' + rule.threshold;
-                                } else {
-                                    if (rule.condition === 'less-than') notation += 'r' + rule.threshold;
-                                    else notation += 'r>' + rule.threshold;
-                                }
+                                var prefix = rule.once ? 'ro' : 'r';
+                                notation += prefix + conditionToString(rule.condition || 'less-than', rule.threshold);
                                 break;
                             case 'sort-ascending': notation += 'sa'; break;
                             case 'sort-descending': notation += 'sd'; break;
-                            case 'critical-success': notation += 'cs>' + rule.threshold; break;
-                            case 'critical-failure': notation += 'cf<' + rule.threshold; break;
-                            case 'target-number': notation += 't' + rule.threshold; break;
-                            case 'failures': notation += 'f' + rule.threshold; break;
+                            case 'critical-success':
+                                notation += 'cs' + conditionToString(rule.condition || 'greater-than', rule.threshold);
+                                break;
+                            case 'critical-failure':
+                                notation += 'cf' + conditionToString(rule.condition || 'less-than', rule.threshold);
+                                break;
+                            case 'target-number':
+                                notation += 't' + conditionToString(rule.condition || 'greater-equal', rule.threshold);
+                                break;
+                            case 'failures':
+                                notation += 'f' + conditionToString(rule.condition || 'less-than', rule.threshold);
+                                break;
+
                             default: break;
                         }
                     }
@@ -1682,34 +1800,36 @@ var DICE = (function() {
                     logEvent(audit, phase, 'sort', 'Sorted dice descending.', { rule: 'sort-descending' });
                 }
 
-                // Critical success/failure – just set flags on the die object (we'll handle final summarization)
+                // Critical success/failure – just set flags on the die object
                 if (type === 'critical-success') {
+                    var csCond = rule.condition || 'greater-than';
                     for (var d = 0; d < groupDice.length; d++) {
-                        if (groupDice[d].value > rule.threshold) {
+                        if (compareValues(groupDice[d].value, csCond, rule.threshold)) {
                             groupDice[d].critical = true;
                         }
                     }
-                    logEvent(audit, phase, 'critical', 'Marked critical successes (>' + rule.threshold + ').', { rule: type, threshold: rule.threshold });
+                    logEvent(audit, phase, 'critical', 'Marked critical successes (' + conditionToString(csCond, rule.threshold) + ').', { rule: type, threshold: rule.threshold, condition: csCond });
                 }
                 if (type === 'critical-failure') {
+                    var cfCond = rule.condition || 'less-than';
                     for (var d = 0; d < groupDice.length; d++) {
-                        if (groupDice[d].value < rule.threshold) {
+                        if (compareValues(groupDice[d].value, cfCond, rule.threshold)) {
                             groupDice[d].critical = true;
                             groupDice[d].failure = true;
                         }
                     }
-                    logEvent(audit, phase, 'critical', 'Marked critical failures (<' + rule.threshold + ').', { rule: type, threshold: rule.threshold });
+                    logEvent(audit, phase, 'critical', 'Marked critical failures (' + conditionToString(cfCond, rule.threshold) + ').', { rule: type, threshold: rule.threshold, condition: cfCond });
                 }
 
-                // Target number / failures – we'll apply at final result calculation
-                // We'll store the thresholds in the notation for later.
                 if (type === 'target-number') {
                     notation._targetThreshold = rule.threshold;
-                    logEvent(audit, phase, 'target', 'Success count for values >= ' + rule.threshold + '.', { rule: type, threshold: rule.threshold });
+                    notation._targetCondition = rule.condition || 'greater-equal';
+                    logEvent(audit, phase, 'target', 'Success count for values ' + conditionToString(notation._targetCondition, rule.threshold) + '.', { rule: type, threshold: rule.threshold, condition: notation._targetCondition });
                 }
                 if (type === 'failures') {
                     notation._failureThreshold = rule.threshold;
-                    logEvent(audit, phase, 'failures', 'Failure count for values < ' + rule.threshold + '.', { rule: type, threshold: rule.threshold });
+                    notation._failureCondition = rule.condition || 'less-than';
+                    logEvent(audit, phase, 'failures', 'Failure count for values ' + conditionToString(notation._failureCondition, rule.threshold) + '.', { rule: type, threshold: rule.threshold, condition: notation._failureCondition });
                 }
             }
         }
@@ -1829,29 +1949,22 @@ var DICE = (function() {
                             var explodeCondition = false;
                             if (rule.threshold === 'max') {
                                 if (die.value === maxVal) explodeCondition = true;
-                            } else if (rule.condition === 'greater-than') {
-                                if (die.value > rule.threshold) explodeCondition = true;
+                            } else {
+                                var explodeOp = rule.condition || 'greater-than';
+                                if (compareValues(die.value, explodeOp, rule.threshold)) explodeCondition = true;
                             }
                             if (explodeCondition) {
                                 explodedDice.push(die);
-                                // Find the physical mesh for this die
                                 var mesh = box.dices.find(d => d.dice_id === die.diceId);
-                                if (mesh) {
-                                    apply_explosion_highlight(mesh);
-                                }
+                                if (mesh) apply_explosion_highlight(mesh);
                                 logEvent(audit, depth, 'explode', 'Die #' + die.diceId + ' (value ' + die.value + ') exploded.', { diceId: die.diceId, value: die.value, rule: rule.type });
                             }
                         }
 
                         // Reroll
                         if (rule.type === 'reroll') {
-                            var shouldReroll = false;
-                            if (rule.condition === 'less-than') {
-                                if (die.value < rule.threshold) shouldReroll = true;
-                            } else if (rule.condition === 'greater-than') {
-                                if (die.value > rule.threshold) shouldReroll = true;
-                            }
-                            if (shouldReroll) {
+                            var rerollOp = rule.condition || 'less-than';
+                            if (compareValues(die.value, rerollOp, rule.threshold)) {
                                 die.kept = false;
                                 phaseTotal -= die.value;
                                 rerolledDice.push(die);
@@ -1953,14 +2066,15 @@ var DICE = (function() {
         var failureCount = 0;
 
         if (targetThreshold !== undefined) {
-            // Count kept dice with value >= threshold
+            var targetOp = lastNotation._targetCondition || 'greater-equal';
             for (var i = 0; i < keptAccum.length; i++) {
-                if (keptAccum[i].value >= targetThreshold) successCount++;
+                if (compareValues(keptAccum[i].value, targetOp, targetThreshold)) successCount++;
             }
             finalValue = successCount;
         } else if (failureThreshold !== undefined) {
+            var failOp = lastNotation._failureCondition || 'less-than';
             for (var i = 0; i < keptAccum.length; i++) {
-                if (keptAccum[i].value < failureThreshold) failureCount++;
+                if (compareValues(keptAccum[i].value, failOp, failureThreshold)) failureCount++;
             }
             finalValue = failureCount;
         } else {
