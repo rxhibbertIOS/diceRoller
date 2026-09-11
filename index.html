@@ -1,55 +1,192 @@
 <!doctype html>
-<html lang='en'> 
+<html lang="en">
 <head>
-    <meta charset='UTF-8' />
-    <title>3D Dice Roller</title>
-    <meta name='author' content='Sarah Rosanna Busch' />
-    <meta name="description" content="The best free online 3D dice roller web app"/>
-    <meta name="keywords" content="DnD, dungeons and dragons, roleplay, dice, roller, 3D, RPG, wargame"/>
-    <meta name='date' content='10 Aug 2023' />
-    <meta name="version" content="0.1" />
-    <meta name='viewport' content='width=device-width, initial-scale=1.0' /> 
-    <link rel='icon shortcut' href='assets/icon.png' />
-    <link rel='stylesheet' href='styles.css' />
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Dice Forge — 3D Dice Roller</title>
+<meta name="description" content="A fast, beautiful 3D dice roller with full RPG notation support." />
+<link rel="icon shortcut" href="/assets/favicon-32x32.png" />
+<link rel="stylesheet" href="styles.css" />
 </head>
-<body onload="main.init()">
 
-    <div id="diceRoller"> <!-- absolutely positionned behind #diceRollerUI -->
-        <!-- dice_box gets created here -->
+<body>
+
+<div class="app">
+
+  <!-- ══════════════════════════════════════════════════════════
+       LEFT PANEL
+       ══════════════════════════════════════════════════════════ -->
+  <aside class="panel">
+
+    <div class="brand">
+      <div class="brand__mark" aria-hidden="true">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="1.6" stroke-linejoin="round">
+          <path d="M12 2.5 21 7.5v9L12 21.5 3 16.5v-9z"/>
+          <path d="M12 2.5v9m0 0L3 7.5m9 4 9-4"/>
+          <circle cx="12" cy="11.5" r="1.4" fill="currentColor" stroke="none"/>
+        </svg>
+      </div>
+      <div class="brand__text">
+        <h1>Dice Forge</h1>
+        <p>3D Roller</p>
+      </div>
     </div>
 
-    <!-- <header>
-        <h1>3D Dice Roller</h1>
-        <button id="helpBtn">?</button>
-    </header> -->
+    <div class="panel__body">
 
-    <main id="diceRollerUI">
-        <div class="top_field">
-            <input type="text" id="textInput" 
+      <!-- ── Notation + Roll ───────────────────────────────── -->
+      <section class="card card--pad">
+        <label class="card__label" for="textInput">Notation</label>
+
+        <div class="notation-field">
+          <span class="notation-field__prefix" aria-hidden="true">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                 stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M4 7h16M4 12h10M4 17h7"/>
+            </svg>
+          </span>
+          <input
+            type="text"
+            id="textInput"
             spellcheck="false"
-            inputmode="none"
-            value="1d20"></input>
+            autocomplete="off"
+            autocapitalize="off"
+            value="1d20"
+            aria-label="Dice notation"
+            placeholder="4d6dl1 + 2" />
         </div>
-        <div id="diceLimit" style="display:none">
-            Wow that's a lot of dice! <br> 
-            [Limit: 20]
-        </div>
-        <div id='center_div' class="center_field"><!-- swipe bound to this -->
-            <div id="instructions" style="display: none">
-                <p>Swipe to roll dice</p>
-            </div>
-        </div> 
-        <div id="builder"></div>
-        <div class="bottom_field">
-            <span id="result"></span>
-        </div>  
-    </main>
 
-    <script src="libs/three.min.js"></script>
-    <script src="libs/cannon.min.js"></script>
-    <script src="libs/teal.js"></script>
-    <script src="dice.js"></script>
-    <script src="dieBuilder.js"></script>
-    <script src="main.js"></script>
+        <div class="chips" id="presetChips" role="group" aria-label="Quick presets">
+          <button class="chip" type="button" data-notation="1d20">1d20</button>
+          <button class="chip" type="button" data-notation="2d20kh1">2d20kh1</button>
+          <button class="chip" type="button" data-notation="4d6dl1">4d6dl1</button>
+          <button class="chip" type="button" data-notation="8d6sa">8d6sa</button>
+          <button class="chip" type="button" data-notation="6d6!>4">6d6!&gt;4</button>
+          <button class="chip" type="button" data-notation="6d10t7">6d10t7</button>
+        </div>
+
+        <button class="btn btn--primary btn--block roll-btn" id="rollBtn" type="button" disabled>
+          <span class="roll-btn__spin" aria-hidden="true">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                 stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21 12a9 9 0 1 1-2.64-6.36"/>
+              <path d="M21 3v6h-6"/>
+            </svg>
+          </span>
+          <span id="rollBtnLabel">Roll the dice</span>
+        </button>
+      </section>
+
+      <!-- ── Customisation ────────────────────────────────── -->
+      <section class="card root-acc acc" id="customCard">
+        <button class="acc__head" id="customHead" type="button" aria-expanded="false"
+                aria-controls="customBody">
+          <span class="acc__title">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                 stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <circle cx="12" cy="12" r="3"/>
+              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+            </svg>
+            Customisation
+          </span>
+          <svg class="acc__chev" width="16" height="16" viewBox="0 0 24 24" fill="none"
+               stroke="currentColor" stroke-width="2" stroke-linecap="round"
+               stroke-linejoin="round" aria-hidden="true">
+            <path d="M6 9l6 6 6-6"/>
+          </svg>
+        </button>
+
+        <div class="acc__body" id="customBody">
+          <div class="acc__inner">
+            <div id="customGroups"></div>
+          </div>
+        </div>
+      </section>
+
+    </div>
+  </aside>
+
+  <!-- ══════════════════════════════════════════════════════════
+       RIGHT STAGE
+       ══════════════════════════════════════════════════════════ -->
+  <main class="stage" id="stage">
+    <div id="diceRoller"></div>
+    <div class="stage__grain" aria-hidden="true"></div>
+    <div class="stage__vignette" aria-hidden="true"></div>
+
+    <div class="hud" id="hud">
+      <span class="hud__dot" aria-hidden="true"></span>
+      <span class="hud__text" id="hudNotation">1d20</span>
+      <span class="hud__sep" aria-hidden="true"></span>
+      <span class="hud__hint">Swipe or press Roll</span>
+    </div>
+
+    <div class="toast-wrap" id="toastWrap" aria-live="polite"></div>
+  </main>
+
+</div>
+
+<!-- ════════════════════════════════════════════════════════════
+     RESULT MODAL
+     ════════════════════════════════════════════════════════════ -->
+<div class="scrim" id="scrim" hidden>
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modalEyebrow" id="modal">
+    <div class="modal__beam" aria-hidden="true"></div>
+    <div class="modal__aura" id="modalAura" aria-hidden="true"></div>
+
+    <header class="modal__head">
+      <div>
+        <p class="modal__eyebrow" id="modalEyebrow">Roll Result</p>
+        <p class="modal__notation" id="modalNotation">1d20</p>
+      </div>
+      <button class="icon-btn" id="modalClose" type="button" aria-label="Close result">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="2" stroke-linecap="round" aria-hidden="true">
+          <path d="M18 6 6 18M6 6l12 12"/>
+        </svg>
+      </button>
+    </header>
+
+    <div class="modal__hero">
+      <div class="hero__value" id="modalTotal">0</div>
+      <div class="hero__caption" id="modalCaption"></div>
+      <div class="hero__badge" id="modalBadge" hidden></div>
+    </div>
+
+    <div class="modal__dice" id="modalDice"></div>
+    <div class="modal__stats" id="modalStats"></div>
+
+    <details class="modal__audit" id="modalAuditWrap">
+      <summary>Audit trail</summary>
+      <ol class="audit-list" id="modalAudit"></ol>
+    </details>
+
+    <footer class="modal__foot">
+      <button class="btn btn--ghost" id="modalDismiss" type="button">Dismiss</button>
+      <button class="btn btn--primary" id="modalAgain" type="button">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M21 12a9 9 0 1 1-2.64-6.36"/>
+          <path d="M21 3v6h-6"/>
+        </svg>
+        Roll again
+      </button>
+    </footer>
+  </div>
+</div>
+
+<!-- ════════════════════════════════════════════════════════════
+     LIBRARIES
+     ════════════════════════════════════════════════════════════ -->
+<script src="libs/three.min.js"></script>
+<script src="libs/cannon.min.js"></script>
+<script src="libs/teal.js"></script>
+<script src="dice.js"></script>
+<script src="dieBuilder.js"></script>
+
+<!-- App -->
+<script src="app.js"></script>
+
 </body>
 </html>
