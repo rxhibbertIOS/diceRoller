@@ -681,9 +681,12 @@
     var dice      = normaliseDice(result);
     var total     = Number(result.resultTotal);
     var constant  = Number(result.constant) || 0;
-    var kept = dice.filter(function (d) { return !d.dropped; });  
-    var critSucc = kept.filter(function (d) { return d.critical && d.success; });
-    var critFail = kept.filter(function (d) { return d.critical && d.failure; });
+
+    var kept      = dice.filter(function (d) { return !d.dropped; });
+    var dropped   = dice.filter(function (d) { return  d.dropped; });
+
+    var critSucc  = kept.filter(function (d) { return d.critical && d.success; });
+    var critFail  = kept.filter(function (d) { return d.critical && d.failure; });
     var plainSucc = kept.filter(function (d) { return d.success && !d.critical; });
     var plainFail = kept.filter(function (d) { return d.failure && !d.critical; });
 
@@ -696,6 +699,8 @@
     el.total.classList.toggle('is-fail', hasCritFail && !hasCritSucc);
     el.aura.classList.toggle('is-crit', hasCritSucc && !hasCritFail);
     el.aura.classList.toggle('is-fail', hasCritFail && !hasCritSucc);
+
+    el.caption.textContent = result.resultString || '';
 
     if (hasCritSucc) {
         el.badge.hidden = false;
@@ -714,33 +719,39 @@
     }
 
     if (isFinite(total)) {
-      animateNumber(el.total, total);
+        animateNumber(el.total, total);
     } else {
-      el.total.textContent = String(result.resultTotal);
+        el.total.textContent = String(result.resultTotal);
     }
 
     el.dice.innerHTML = dice.map(function (d, i) {
-    var cls = 'die-chip';
-    if (d.dropped)                     cls += ' is-dropped';
-    else if (d.critical && d.failure)  cls += ' is-fail';
-    else if (d.critical && d.success)  cls += ' is-crit';
-    else if (d.failure)                cls += ' is-failure';
-    else if (d.success)                cls += ' is-success';
+        var cls = 'die-chip';
+        if (d.dropped)                     cls += ' is-dropped';
+        else if (d.critical && d.failure)  cls += ' is-fail';
+        else if (d.critical && d.success)  cls += ' is-crit';
+        else if (d.failure)                cls += ' is-failure';
+        else if (d.success)                cls += ' is-success';
 
-      var delay = reduceMotion ? 0 : Math.min(i * 26, 520);
-      var title = d.dropped ? 'Dropped' : (d.critical ? 'Critical' : (d.failure ? 'Failure' : 'Kept'));
+        var delay = reduceMotion ? 0 : Math.min(i * 26, 520);
 
-      return '<span class="' + cls + '" style="animation-delay:' + delay + 'ms" title="' + esc(title) + '">' +
-               esc(d.value) +
-             '</span>';
+        var title =
+            d.dropped               ? 'Dropped'          :
+            d.critical && d.failure ? 'Critical failure' :
+            d.critical && d.success ? 'Critical success' :
+            d.failure               ? 'Failure'          :
+            d.success               ? 'Success'          :
+                                      'Kept';
+
+        return '<span class="' + cls + '" style="animation-delay:' + delay +
+               'ms" title="' + esc(title) + '">' + esc(d.value) + '</span>';
     }).join('');
 
     var stats = [];
     stats.push({ k: 'Total', v: isFinite(total) ? total : String(result.resultTotal), gold: true });
-    if (dice.length) stats.push({ k: 'Dice rolled', v: dice.length });
+    if (dice.length)      stats.push({ k: 'Dice rolled',     v: dice.length });
     stats.push({ k: 'Kept', v: kept.length });
-    if (dropped.length) stats.push({ k: 'Dropped', v: dropped.length });
-    if (constant)      stats.push({ k: 'Modifier', v: (constant > 0 ? '+' : '') + constant, gold: true });
+    if (dropped.length)   stats.push({ k: 'Dropped',         v: dropped.length });
+    if (constant)         stats.push({ k: 'Modifier',        v: (constant > 0 ? '+' : '') + constant, gold: true });
     if (critSucc.length)  stats.push({ k: 'Critical Hits',   v: critSucc.length,  good: true });
     if (critFail.length)  stats.push({ k: 'Critical Misses', v: critFail.length,  bad:  true });
     if (plainSucc.length) stats.push({ k: 'Successes',       v: plainSucc.length, good: true });
@@ -750,21 +761,23 @@
     if (phases > 1) stats.push({ k: 'Phases', v: phases });
 
     el.stats.innerHTML = stats.map(function (s) {
-      var cls = 'stat';
-      if (s.good) cls += ' is-good';
-      if (s.bad)  cls += ' is-bad';
-      if (s.gold) cls += ' is-gold';
-      return '<div class="' + cls + '">' +
-               '<p class="stat__k">' + esc(s.k) + '</p>' +
-               '<p class="stat__v' + (typeof s.v === 'string' ? ' mono' : '') + '">' + esc(s.v) + '</p>' +
-             '</div>';
+        var cls = 'stat';
+        if (s.good) cls += ' is-good';
+        if (s.bad)  cls += ' is-bad';
+        if (s.gold) cls += ' is-gold';
+        return '<div class="' + cls + '">' +
+                 '<p class="stat__k">' + esc(s.k) + '</p>' +
+                 '<p class="stat__v' + (typeof s.v === 'string' ? ' mono' : '') + '">' +
+                   esc(s.v) +
+                 '</p>' +
+               '</div>';
     }).join('');
 
     el.audit.innerHTML = renderAudit(result);
     el.auditWrap.open = false;
 
     openModal();
-  }
+}
 
   function countPhases(result) {
     if (!Array.isArray(result.audit)) return 1;
