@@ -41,8 +41,8 @@
  * @author Anton Natarov aka Teal (original author)
  * @author Sarah Rosanna Busch (refactor, see changelog)
  * @author Rory Hibbert (refactor, see changelog)
- * @date 10 Aug 2023
- * @version 2.0 (with advanced rules and audit)
+ * @date September 2026
+ * @version 3.0 (with advanced rules and audit)
  * @dependencies teal.js, cannon.js, three.js
  */
 
@@ -86,6 +86,15 @@ var DICE = (function() {
         UNKNOWN_ERROR: 'An unexpected error occurred during the dice roll.',
     };
 
+    /**
+     * Cancels the roll watchdog timer for a dice box.
+     *
+     * Safe to call at any time, whether or not a watchdog is currently
+     * scheduled. Called when a roll completes normally, when a roll fails,
+     * and when the dice box is destroyed.
+     *
+     * @param {dice_box} box - The dice box whose watchdog should be cancelled.
+     */
     function _clearRollWatchdog(box) {
         if (box._rollWatchdog) {
             clearTimeout(box._rollWatchdog);
@@ -93,6 +102,27 @@ var DICE = (function() {
         }
     }
 
+    /**
+     * Schedules a watchdog timer that force-resets a box's `rolling` flag if
+     * a roll fails to complete within the configured timeout.
+     *
+     * This is a safety net against the pathological case where a physics
+     * glitch or an unhandled error leaves `box.rolling === true` permanently,
+     * which would silently block every subsequent call to `roll()`.
+     *
+     * The timer does NOT clear the dice — the roll pipeline may still be
+     * mid-flight and would recreate them anyway on the next phase. It only
+     * resets the flag so the next roll can proceed.
+     *
+     * Calling this while a watchdog is already scheduled replaces the
+     * previous one. The timeout is read from `vars.roll_timeout_ms`; a value
+     * of 0 or a negative number disables the watchdog entirely.
+     *
+     * @param {dice_box} box - The dice box to protect.
+     * @param {Object} notation - The parsed notation for the roll that is
+     *        starting. Currently unused, but retained so a future version
+     *        can log which notation triggered the timeout.
+     */
     function _setRollWatchdog(box, notation) {
         _clearRollWatchdog(box);
         var timeoutMs = vars.roll_timeout_ms;
@@ -174,7 +204,17 @@ var DICE = (function() {
     }
 
     /**
-     * Converts an operator string (>, >=, <, <=, =) to a condition name.
+     * Converts an operator string (>, >=, <, <=, =) to a canonical condition
+     * name used internally by the rule engine.
+     *
+     * Condition names are stored in parsed rules instead of raw operators so
+     * that comparison logic and notation serialization can switch on a single
+     * vocabulary rather than re-parsing operator strings on every evaluation.
+     *
+     * @param {string} op - One of '>', '>=', '<', '<=', '='.
+     * @returns {string|null} One of 'greater-than', 'greater-equal',
+     *          'less-than', 'less-equal', 'equal', or null if the operator
+     *          is unrecognised.
      */
     function operatorToCondition(op) {
         switch (op) {
@@ -188,7 +228,21 @@ var DICE = (function() {
     }
 
     /**
-     * Compares a value against a threshold using the given condition name.
+     * Compares a numeric value against a threshold using a canonical condition
+     * name produced by operatorToCondition().
+     *
+     * This is the single place in the engine where "greater than or equal to"
+     * actually becomes a JavaScript comparison operator. Explode thresholds,
+     * reroll conditions, target numbers, critical-success and critical-failure
+     * rules all route through here.
+     *
+     * @param {number} value - The die value to test.
+     * @param {string} condition - One of 'greater-than', 'greater-equal',
+     *        'less-than', 'less-equal', 'equal'.
+     * @param {number} threshold - The numeric threshold to compare against.
+     * @returns {boolean} True if the value satisfies the condition. Returns
+     *          false for an unrecognised condition rather than throwing, so
+     *          a malformed rule cannot crash a roll.
      */
     function compareValues(value, condition, threshold) {
         switch (condition) {
@@ -202,7 +256,20 @@ var DICE = (function() {
     }
 
     /**
-     * Renders a condition + threshold back to a short string (e.g. ">19", "=6").
+     * Renders a canonical condition name and threshold back to a short
+     * operator string, e.g. (">", 19) yields ">19".
+     *
+     * Used by stringify_notation() to serialize parsed rules back to their
+     * original textual form, and by the audit system to produce human-readable
+     * rule descriptions.
+     *
+     * @param {string} condition - One of 'greater-than', 'greater-equal',
+     *        'less-than', 'less-equal', 'equal'.
+     * @param {number|string} threshold - The threshold value to append.
+     * @returns {string} A short operator-plus-threshold string such as
+     *          ">19", ">=6", or "=3". Unrecognised conditions fall back to
+     *          ">threshold" to match the default assumption made elsewhere
+     *          in the parser.
      */
     function conditionToString(condition, threshold) {
         switch (condition) {
@@ -215,9 +282,44 @@ var DICE = (function() {
         }
     }
 
+    /**
+     * The currently configured RNG seed, or null when the engine is using
+     * Math.random().
+     *
+     * Retained alongside _rng so that getParam('rng_seed') can report the
+     * active seed without having to introspect the generator function itself.
+     * @type {number|null}
+    */
     var rngSeed = null;
+
+    /**
+     * The active seeded random number generator, or null when the engine is
+     * using Math.random().
+     *
+     * When non-null, this is a closure returned by mulberry32() and is called
+     * by rnd() in preference to Math.random(). Setting a seed gives fully
+     * reproducible rolls for testing, replays, or fairness verification.
+     *
+     * @type {function(): number|null}
+     */
     var _rng = null;
 
+    /**
+     * Creates a fast, seeded 32-bit PRNG based on the Mulberry32 algorithm.
+     *
+     * Mulberry32 is not cryptographically secure and is not suitable for
+     * anything that needs unpredictable randomness. It is, however, fast,
+     * has a good enough distribution for dice simulation, and — most
+     * importantly — is fully deterministic given a seed. That last property
+     * is what makes reproducible rolls possible.
+     *
+     * The returned closure captures its own internal state, so two generators
+     * created from different seeds never interfere with each other.
+     *
+     * @param {number} a - The seed. Any 32-bit integer works.
+     * @returns {function(): number} A function that returns successive
+     *          pseudo-random floats in the range [0, 1).
+     */
     function mulberry32(a) {
         return function() {
             a |= 0;
@@ -229,6 +331,26 @@ var DICE = (function() {
         };
     }
 
+    /**
+     * Sets or clears the random number generator seed for the dice engine.
+     *
+     * The seed is module-global, not per-instance: setting it here affects
+     * every dice_box in the current JavaScript context. This mirrors the way
+     * the rest of the engine's configuration is stored, and is sufficient for
+     * the common case of testing or replaying a single tray.
+     *
+     * Passing null or undefined reverts to Math.random(), which is the default
+     * behaviour. Passing a number creates a fresh Mulberry32 generator seeded
+     * with that value; two calls with the same seed produce identical roll
+     * sequences, including die positions and physics outcomes.
+     *
+     * This function is normally called indirectly through
+     * setParam('rng_seed', value) rather than directly.
+     *
+     * @param {number|null|undefined} seed - The seed value, or null/undefined
+     *        to revert to Math.random().
+     * @returns {void}
+     */
     function setRngSeed(seed) {
         if (seed === null || seed === undefined) {
             rngSeed = null;
@@ -882,6 +1004,36 @@ var DICE = (function() {
         );
     };
 
+    /**
+     * Repositions the four invisible physics barriers that keep dice inside
+     * the visible tray.
+     *
+     * Called from reinit() whenever the container is resized, so the walls
+     * follow the visible edges rather than staying where they were first
+     * placed.
+     *
+     * Barrier order is significant and matches construction order in the
+     * dice_box constructor:
+     *
+     *     [0]  +Y wall   (top edge)
+     *     [1]  -Y wall   (bottom edge)
+     *     [2]  +X wall   (right edge)
+     *     [3]  -X wall   (left edge)
+     *
+     * Each wall is positioned at 93% of the half-dimension, leaving a small
+     * margin between the physics boundary and the visual edge of the desk.
+     * That gap is deliberate: it ensures the walls are never visibly clipping
+     * through a die that has come to rest against them.
+     *
+     * Silently does nothing if the barriers have not been constructed yet
+     * (which is the case during the first reinit() call, before the
+     * constructor has finished) or if the array is in an unexpected state.
+     * This is safe because a missing barrier simply means dice are free to
+     * roll past the edge of the tray, which is the pre-existing behaviour
+     * before any resize handling existed.
+     *
+     * @returns {void}
+     */
     that.dice_box.prototype._updateBarriers = function() {
         if (!this._barriers || this._barriers.length !== 4) return;
         var hy = this.h * 0.93;
@@ -1700,25 +1852,29 @@ var DICE = (function() {
     // ---------------------------------------------------------------------
 
     /**
-     * Returns a random face value for a given die type (logical, not physical).
+     * Returns the maximum public face value of a die type.
      *
-     * @param {string} type - e.g., 'd6', 'd20'
-     * @returns {number} - value in the appropriate range (d10 returns 1-10, d9 returns 0-9? We'll treat d9 as 0-9 for consistency)
-     */
-    function roll_die_value(type) {
-        var range = CONSTS.dice_face_range[type];
-        if (!range) return 0;
-        var val = Math.floor(Math.random() * (range[1] - range[0] + 1)) + range[0];
-        // For d10, convert 0 to 10 (public notation)
-        if (type === 'd10' && val === 0) val = 10;
-        // For d9, convert 0 to 9
-        if (type === 'd9' && val === 0) val = 9;
-        // d100 tens digit returns 0-9, but combined later
-        return val;
-    }
-
-    /**
-     * Returns the maximum logical value of a die type.
+     * "Public" here means the value the rules engine and the caller care
+     * about, which is not always what the internal face range reports:
+     *
+     *   - d4, d6, d8, d12, d20 have straightforward ranges (1 through N),
+     *     and the maximum is just the upper bound.
+     *   - d10 uses an internal face range of 0-9, but its public maximum is
+     *     10 (the '0' face is presented as '10' on the die itself).
+     *   - d9 uses the same internal range as d10 for historical reasons, but
+     *     its public maximum is 9.
+     *   - d100 is a compound die built from a d10 geometry, and its physical
+     *     face range is the tens digit only (0-9). The logical maximum, 100,
+     *     is not represented here because compounding is handled at the
+     *     result-evaluation layer, not at the die level.
+     *
+     * The primary consumer is the explosion rule: `threshold: 'max'` resolves
+     * to this value, so a d6 explodes on 6, a d10 explodes on 10, a d20
+     * explodes on 20, and so on.
+     *
+     * @param {string} type - Die type, e.g. 'd6', 'd20'.
+     * @returns {number} The die's maximum public face value. Returns 0 for
+     *          an unrecognised type, which callers treat as "never explodes".
      */
     function die_max_value(type) {
         var range = CONSTS.dice_face_range[type];
@@ -1729,44 +1885,46 @@ var DICE = (function() {
         return range[1];
     }
 
-    /**
-     * Checks if a die value should explode based on the rule.
-     */
-    function should_explode(value, rule) {
-        if (rule.threshold === 'max') {
-            // We need the type; we'll pass type separately.
-            return false; // will be handled by caller with type
-        }
-        if (rule.condition === 'greater-than') {
-            return value > rule.threshold;
-        }
-        return false;
-    }
-
-    /**
-     * Checks if a die should be rerolled.
-     */
-    function should_reroll(value, rule) {
-        if (rule.condition === 'less-than') {
-            return value < rule.threshold;
-        } else if (rule.condition === 'greater-than') {
-            return value > rule.threshold;
-        }
-        return false;
-    }
-
     // ---------------------------------------------------------------------
     // RECURSIVE ROLL ENGINE
     // ---------------------------------------------------------------------
 
     /**
-     * Builds the next notation object from dice that need to be re‑rolled
-     * (explosions or rerolls).
+     * Builds the notation object for the next recursive phase of a roll.
      *
-     * @param {Array} explodedDice - Array of combined dice that exploded.
-     * @param {Array} rerolledDice - Array of combined dice that need reroll.
-     * @param {Object} originalNotation - The parsed notation for this phase.
-     * @returns {Object} A new parsed notation object (groups only, no constant).
+     * Called by the recursive roll engine after a phase completes. It collects
+     * the dice that need to be re-rolled — those that triggered an explode or
+     * reroll rule — and constructs a fresh notation whose groups contain only
+     * those dice. The result is passed to the next call of _process_recursive_roll.
+     *
+     * The new notation preserves the parent group's rules, die type, compound
+     * flag, and visual settings, so an exploding die behaves identically to
+     * the die that spawned it. In particular:
+     *
+     *   - The rules array is copied so phase-local rule mutations do not leak
+     *     back into the original notation.
+     *   - The `visual` object is deep-cloned so per-phase recolouring cannot
+     *     corrupt the source.
+     *   - `originalGroupId` is propagated forward, which is what allows
+     *     sortKeptDice() to re-group dice from all phases back into their
+     *     originating groups for final presentation.
+     *
+     * Multiple dice from the same original group collapse into a single group
+     * in the returned notation, with `count` reflecting how many dice need
+     * re-rolling. Dice from different original groups remain separate.
+     *
+     * @param {Object[]} explodedDice - Combined dice results (from
+     *        combine_compound_results) whose values triggered an explode rule.
+     * @param {Object[]} rerolledDice - Combined dice results whose values
+     *        triggered a reroll rule.
+     * @param {Object} originalNotation - The parsed notation for the phase
+     *        that just completed. Used to look up each die's source group
+     *        definition.
+     * @returns {Object|null} A fresh parsed-notation-shaped object with
+     *          `groups` populated and `constant` set to 0, ready to be handed
+     *          to generate_vectors and then _process_recursive_roll. Returns
+     *          null if there is nothing to re-roll, which signals the engine
+     *          to finalise the roll.
      */
     function build_next_notation(explodedDice, rerolledDice, originalNotation) {
         var allDice = explodedDice.concat(rerolledDice);
@@ -1807,12 +1965,22 @@ var DICE = (function() {
             set: [], // will be filled later by generate_vectors
             constant: 0,
             error: false,
-            // also copy other fields if needed
         };
     }
 
     /**
-     * Finds a group definition by id.
+     * Finds a group definition within a parsed notation by its numeric id.
+     *
+     * Group ids are assigned sequentially during parsing (0, 1, 2, ...) and
+     * are preserved as-is through recursive phases for the original groups.
+     * Phase-cloned groups receive their own ids but carry the original id in
+     * `originalGroupId`, which is why sortKeptDice() and colour resolution
+     * both check that field before falling back to `id`.
+     *
+     * @param {Object} notation - A parsed notation object with a `groups` array.
+     * @param {number} groupId - The id to search for.
+     * @returns {Object|null} The matching group definition, or null if no
+     *          group with that id exists.
      */
     function findGroupById(notation, groupId) {
         for (var i = 0; i < notation.groups.length; i++) {
@@ -1822,9 +1990,42 @@ var DICE = (function() {
     }
 
     /**
-     * Applies static rules (keep/drop, sort) to the combined results.
-     * This mutates the 'kept' flag and may reorder.
-     * Also logs events to audit.
+     * Applies every static rule to a phase's combined dice results.
+     *
+     * "Static" here means rules that do not generate new dice: keep/drop,
+     * sort, critical-success, critical-failure, target-number, and failures.
+     * Dynamic rules (explode, explode-compounding, penetrate, reroll) are
+     * handled by _process_recursive_roll after this function returns.
+     *
+     * Rules are applied in the order they appear in each group's `rules`
+     * array, which matches the order they were written in the notation. So
+     * `4d6sa kh3` sorts ascending first, then keeps the three highest — not
+     * the other way around.
+     *
+     * This function mutates the result objects in `combinedResults`:
+     *
+     *   - `kept` is set to true or false on each die based on keep/drop rules.
+     *   - `critical` and `failure` flags are set on dice that match critical
+     *     rules.
+     *   - `originalGroupId` is written onto every die so that later stages
+     *     (sortKeptDice, result highlighting) can trace a die back to its
+     *     source group even after recursive phase-cloning.
+     *
+     * It also writes `_targetThreshold` / `_targetCondition` and
+     * `_failureThreshold` / `_failureCondition` onto the notation object
+     * itself, which _finalise_roll reads to decide whether the final result
+     * is a sum, a success count, or a failure count.
+     *
+     * Every rule application is logged to the audit trail with a
+     * human-readable description.
+     *
+     * @param {Object} notation - The parsed notation for this phase. Used to
+     *        look up each group's rules. Mutated with target/failure config.
+     * @param {Object[]} combinedResults - Per-logical-die results from
+     *        combine_compound_results. Mutated in place.
+     * @param {Array} audit - The shared audit array for the roll.
+     * @param {number} phase - Recursion depth, 0 for the initial roll.
+     * @returns {void}
      */
     function apply_static_rules(notation, combinedResults, audit, phase) {
         // Group by groupId
@@ -1861,9 +2062,9 @@ var DICE = (function() {
                         return a.diceId - b.diceId;
                     });
 
-                    // Mark all as not kept first? Actually we'll apply selectively
-                    // For keep rules, we start with all false, then set kept true for selected.
-                    // For drop rules, we start with all true, then set kept false for selected.
+                    // For keep rules, start with all dice dropped and select the ones
+                    // to keep. For drop rules, start with all dice kept and select the
+                    // ones to drop
                     var keepMode = (type === 'keep-highest' || type === 'keep-lowest');
                     if (keepMode) {
                         for (var d = 0; d < groupDice.length; d++) groupDice[d].kept = false;
@@ -1955,6 +2156,32 @@ var DICE = (function() {
         }
     }
 
+    /**
+     * Re-orders the final kept dice into their presentation order.
+     *
+     * The recursive roll engine accumulates kept dice across phases in the
+     * order they were produced, which for an exploding roll means phase-0
+     * dice first, phase-1 dice next, and so on. That order is meaningless to
+     * the user, so before the final result is assembled we re-group the dice
+     * by their originating notation group and, where a sort rule was applied,
+     * sort within each group.
+     *
+     * Only the *last* sort rule in a group is honoured. This matches how
+     * apply_static_rules processes them during evaluation, where an earlier
+     * sort rule can affect a keep/drop decision but a later sort rule
+     * supersedes it for final presentation.
+     *
+     * Dice whose original group cannot be found are appended at the end
+     * rather than dropped, on the assumption that losing a result is worse
+     * than mis-ordering it.
+     *
+     * @param {Object[]} kept - The accumulated kept dice from all phases.
+     * @param {Object} notation - The original notation (from
+     *        box._originalNotation), used to look up groups and their sort
+     *        rules by `originalGroupId`.
+     * @returns {Object[]} A new array containing the same dice in their
+     *          final presentation order. Does not mutate the input array.
+     */
     function sortKeptDice(kept, notation) {
         if (!notation || !notation.groups) return kept;
 
@@ -2001,7 +2228,11 @@ var DICE = (function() {
             delete groups[gid];
         }
 
-        // Append any remaining dice (shouldn't normally happen)
+        // Defensive fallback: dice whose original group can't be resolved are
+        // appended in arbitrary order. If you ever see this branch fire, it
+        // means a phase produced a die whose originalGroupId is missing from
+        // the source notation — likely a bug in build_next_notation or
+        // apply_static_rules.
         for (var gid in groups) {
             for (var d = 0; d < groups[gid].length; d++) ordered.push(groups[gid][d]);
         }
@@ -2010,36 +2241,63 @@ var DICE = (function() {
     }
 
     /**
-     * Runs a single physics phase for the given vectors and calls callback with raw results.
-     */
-    function _run_physics_phase(box, vectors, callback) {
-        box.prepare_dices_for_roll(vectors);
-
-        // Simulate until stopped
-        box.iteration = 0;
-        while (!box.check_if_throw_finished()) {
-            ++box.iteration;
-            box.world.step(vars.frame_rate);
-        }
-
-        var rawResults = get_dice_values(box.dices);
-        callback(rawResults);
-    }
-
-    /**
-     * Recursive roll processor
+     * Executes one phase of a recursive roll and schedules the next.
      *
-     * @param {Object} box                     - dice_box instance
-     * @param {Object} parsedNotation          - notation for this phase
-     * @param {number} accumulatedTotal        - total from previous phases
-     * @param {number} depth                   - current recursion depth
-     * @param {number} maxDepth                - safety limit
-     * @param {Object} vector                  - throw direction (normalised)
-     * @param {number} boost                   - throw strength
-     * @param {Array}  forcedResults           - optional forced values for first phase (from before_roll)
-     * @param {Function} finalCallback         - called when entire roll is done
-     * @param {Array}  audit                   - shared audit array
-     * @param {Array}  keptAccum               - accumulated kept dice across phases
+     * This is the heart of the dynamic-rule engine. It is called once for the
+     * initial phase of any roll whose notation includes an explode, reroll,
+     * or penetrate rule, and then calls itself for each subsequent phase
+     * produced by dice that need to be re-rolled.
+     *
+     * A single phase does the following:
+     *
+     *   1. Guards against runaway recursion (depth and total-dice limits).
+     *   2. Generates physical dice vectors from the current notation and runs
+     *      them through the physics simulation via box._roll_phase.
+     *   3. Combines compound results (d100 pairs) into logical dice.
+     *   4. Applies all static rules to this phase's results.
+     *   5. Scans every kept die for dynamic-rule triggers (explosion, reroll,
+     *      penetration) and collects the ones that fired.
+     *   6. Accumulates kept dice into a shared array for the final result.
+     *   7. Either recurses with a fresh notation built from the triggered dice,
+     *      or finalises the roll if nothing needs re-rolling.
+     *
+     * Phases are separated by an optional delay (`vars.explosion_delay_ms`)
+     * when explosions occurred, so the user sees a distinct second throw rather
+     * than an instant replacement. That delay uses setTimeout, so the recursion
+     * is asynchronous once explosions are involved — a roll is not complete
+     * when this function returns, only when finalCallback fires.
+     *
+     * @param {dice_box} box - The dice box instance driving the roll.
+     * @param {Object} parsedNotation - The parsed notation for THIS phase.
+     *        For depth > 0 this is not the original notation — it's the output
+     *        of build_next_notation from the previous phase, containing only
+     *        the dice that need re-rolling.
+     * @param {number} accumulatedTotal - The running sum of kept dice values
+     *        from all previous phases. Carried forward so the final result
+     *        doesn't have to re-sum from scratch.
+     * @param {number} depth - Current recursion depth, 0 for the initial phase.
+     * @param {number} maxDepth - The recursion limit, read from
+     *        vars.max_recursion_depth. Reaching it produces a
+     *        RECURSION_DEPTH_EXCEEDED error rather than an infinite loop.
+     * @param {Object} vector - The normalised throw direction, reused for every
+     *        phase so subsequent throws travel the same direction as the first.
+     * @param {number} boost - The throw strength, also reused across phases.
+     * @param {Array<number>|null} forcedResults - Optional forced die values
+     *        from the caller's before_roll callback. Applied only in phase 0;
+     *        subsequent phases pass null. Used to visually reproduce results
+     *        the caller already knows.
+     * @param {Function} finalCallback - Called with the completed notation
+     *        object once the entire roll has settled. This is the public
+     *        after_roll callback, wrapped by start_throw to resolve or reject
+     *        the returned Promise.
+     * @param {Array} audit - The shared audit trail. Every phase appends its
+     *        events to this array, so the final auditString reads as a
+     *        complete timeline of the roll.
+     * @param {Array} keptAccum - Shared accumulator of kept logical dice
+     *        across all phases. Each phase pushes its own kept dice onto the
+     *        end. The final sortKeptDice pass re-orders this array for
+     *        presentation.
+     * @returns {void}
      */
     function _process_recursive_roll(
         box,
@@ -2173,7 +2431,9 @@ var DICE = (function() {
                     // No more dice – finalise
                     _finalise_roll(box, parsedNotation, accumulatedTotal + phaseTotal, finalCallback, keptAccum, audit);
                 } else {
-                    // Recurse – note: we do NOT call box.clear() because box.roll will clear on next call
+                    // Recurse without clearing first — _roll_phase calls
+                    // prepare_dices_for_roll, which clears on entry. Clearing here
+                    // would briefly blank the tray between phases.
                     var newTotal = accumulatedTotal + phaseTotal;
                     // If there were explosions, notify and delay
                     var delay = (explodedDice.length > 0) ? vars.explosion_delay_ms : 0;
@@ -2229,7 +2489,51 @@ var DICE = (function() {
     }
 
     /**
-     * Finalises the roll and calls the after_roll callback.
+     * Assembles the final result object and delivers it to the caller.
+     *
+     * Called by _process_recursive_roll when no further phases are needed,
+     * and by throw_dices' simple path once a non-dynamic roll has settled.
+     * Its job is to reduce the accumulated dice into a single numeric result
+     * plus a human-readable string, build the notation object that the
+     * after_roll callback receives, and hand control back to the caller.
+     *
+     * Three result modes are supported, chosen by which rule the notation
+     * specified:
+     *
+     *   - Target-number (`tN`, `t>N`, etc.): the result is the COUNT of kept
+     *     dice that satisfy the target condition, not their sum.
+     *   - Failures (`fN`, `f<N`, etc.): the result is the count of kept dice
+     *     that satisfy the failure condition.
+     *   - Default: the result is the sum of kept dice plus any constant.
+     *
+     * The final `keptAccum` array is re-ordered via sortKeptDice so that dice
+     * from the same notation group appear together and honour their sort
+     * rules. This is what makes `4d6sa` present its results sorted rather
+     * than in the order the physics engine happened to settle them.
+     *
+     * Before returning, this function:
+     *
+     *   - Clears `box.rolling` so the next roll can start.
+     *   - Cancels the roll watchdog timer.
+     *   - Invokes the after_roll callback if provided. If the callback throws,
+     *     the error is routed through _handleDiceError rather than propagating.
+     *   - Schedules the fade-out of the settled dice.
+     *
+     * @param {dice_box} box - The dice box that ran the roll.
+     * @param {Object} lastNotation - The notation object for the final phase.
+     *        Its `_targetThreshold` / `_failureThreshold` properties (set by
+     *        apply_static_rules during phase evaluation) determine which
+     *        result mode is used.
+     * @param {number} finalTotal - The accumulated sum of kept dice values
+     *        across every phase. Only used in default (sum) mode.
+     * @param {Function} afterRollCb - The user-supplied after_roll callback,
+     *        or the Promise-resolving wrapper installed by start_throw. May
+     *        be null.
+     * @param {Array} keptAccum - All kept logical dice accumulated across
+     *        every phase. Re-ordered in place before being attached to the
+     *        result.
+     * @param {Array} audit - The shared audit trail.
+     * @returns {void}
      */
     function _finalise_roll(box, lastNotation, finalTotal, afterRollCb, keptAccum, audit) {
         // Determine result type based on rules
@@ -2259,10 +2563,10 @@ var DICE = (function() {
         }
 
         // Build result string
-        var values = keptAccum.map(d => d.value);
         if (box._originalNotation) {
             keptAccum = sortKeptDice(keptAccum, box._originalNotation);
         }
+        var values = keptAccum.map(d => d.value);
         var resultString = values.join(' ');
         if (lastNotation.constant) {
             if (lastNotation.constant > 0) resultString += ' +' + lastNotation.constant;
@@ -2301,6 +2605,47 @@ var DICE = (function() {
     // MAIN THROW FUNCTION (modified to branch)
     // ---------------------------------------------------------------------
 
+    /**
+     * The main entry point for executing a roll, after the public API has
+     * resolved options and normalised the input.
+     *
+     * Called by start_throw() (via the public roll() wrapper) and by
+     * bind_swipe() when the user completes a swipe gesture. Its job is to
+     * take a raw throw description and route it through the correct pipeline:
+     * either the recursive engine for notations that include dynamic rules,
+     * or the simpler single-phase path for everything else.
+     *
+     * Both paths end up calling after_roll — either directly or via
+     * finalCallback threaded through _process_recursive_roll. Callers never
+     * need to know which path was taken; the resulting notation object is
+     * shaped the same either way.
+     *
+     * The before_roll callback is invoked once, before any physics starts,
+     * with the parsed notation. Its return value (if any) is treated as
+     * forced die values and handed to the first physics phase so the caller
+     * can visually reproduce results they already know.
+     *
+     * @param {dice_box} box - The dice box instance to roll.
+     * @param {Object} vector - The throw direction. MUTATED: this function
+     *        divides x and y by `dist` to normalise it, so callers must not
+     *        reuse the object afterwards.
+     * @param {number} boost - The throw strength, scaling the initial
+     *        velocity of every die.
+     * @param {number} dist - The magnitude of `vector` before normalisation.
+     *        Used as a divisor and also as an implicit measure of how
+     *        energetic the throw should be.
+     * @param {Function|null} before_roll - Optional callback invoked with the
+     *        parsed notation before physics begins. May return an array of
+     *        forced die values for the first phase. Errors thrown here are
+     *        routed through _handleDiceError.
+     * @param {Function} after_roll - Callback invoked once the roll has fully
+     *        settled. Receives the completed notation object. On the
+     *        recursive path this is the wrapped resolver installed by
+     *        start_throw; on the simple path it is called directly.
+     * @returns {void} This function is callback-driven. It does not return
+     *          anything and does not throw — all errors are delivered via
+     *          after_roll with an error-shaped notation object.
+     */
     function throw_dices(
         box,
         vector,
@@ -3529,7 +3874,7 @@ var DICE = (function() {
             case 'desk_color':
                 vars.desk_color = value;
                 if (instance.desk) {
-                    instance.desk.material.color.set(value);
+                    instance.desk.material.color.set(colorToNumber(value));
                 }
                 break;
             case 'desk_opacity':
@@ -3651,7 +3996,28 @@ var DICE = (function() {
     };
 
 
-    // Helper to convert CSS color to number (if needed)
+    /**
+     * Converts a CSS colour representation into a numeric 0xRRGGBB value
+     * suitable for Three.js and Cannon.js colour fields.
+     *
+     * Accepts either a number or a '#'-prefixed hex string, so callers can
+     * pass whatever is most natural to them without pre-converting. This is
+     * the standard shape used by the parameter API: `setParam('desk_color',
+     * '#ff0000')` and `setParam('desk_color', 0xff0000)` both work.
+     *
+     * Falls back to mid-grey (0x808080) if the input is neither a number nor
+     * a string starting with '#'. That fallback is a silent recovery rather
+     * than an error, on the assumption that a mistyped colour should not
+     * break a roll.
+     *
+     * Note: this only handles the #RRGGBB form, not short #RGB, rgb(...),
+     * named CSS colours, or alpha. If you need those, convert before calling.
+     *
+     * @param {number|string} color - Either a numeric 0xRRGGBB value, or a
+     *        string of the form '#RRGGBB' (case-insensitive).
+     * @returns {number} The colour as a 0xRRGGBB number, or 0x808080 if the
+     *          input could not be interpreted.
+     */
     function colorToNumber(color) {
         if (typeof color === 'number') return color;
         if (typeof color === 'string' && color.startsWith('#')) {
@@ -3660,7 +4026,31 @@ var DICE = (function() {
         return 0x808080;
     }
 
-    // Helper to update contact materials (friction/restitution)
+    /**
+     * Applies the current friction and restitution settings to the physics
+     * contact materials.
+     *
+     * Called by _applyParam whenever one of the four contact-related
+     * parameters is changed via setParam: `dice_friction`,
+     * `dice_restitution`, `dice_dice_friction`, or `dice_dice_restitution`.
+     * Contact materials in Cannon.js are mutable, so this updates the
+     * existing instances rather than creating new ones.
+     *
+     * Only the desk-dice and dice-dice contacts are updated. The barrier-dice
+     * contact is intentionally left alone — dice are meant to bounce off the
+     * walls with the fixed high restitution set in the constructor, and
+     * exposing that as a configurable value would let callers make the tray
+     * unplayable.
+     *
+     * Values are read from `vars` with fallbacks matching the constructor
+     * defaults. This is defensive: if a setParam call happened before the
+     * relevant `vars` field was populated (which shouldn't happen in normal
+     * use, but could via direct `vars` manipulation), the fallbacks keep the
+     * physics world in a sane state.
+     *
+     * @this {dice_box}
+     * @returns {void}
+     */
     that.dice_box.prototype._updateContactMaterials = function _updateContactMaterials() {
         // Rebuild the contact materials with current friction/restitution values
         const deskFriction = vars.dice_friction || 0.01;
@@ -3678,7 +4068,24 @@ var DICE = (function() {
         }
     };
 
-    // Helper to update lighting
+    /**
+     * Re-applies the current ambient and spot light colours to the scene.
+     *
+     * Called by _applyParam when `ambient_light_color` or `spot_light_color`
+     * is changed via setParam. Iterates the scene's direct children looking
+     * for AmbientLight instances, updating each one, then updates the box's
+     * spot light if it exists.
+     *
+     * Only direct children are examined. If you ever nest the ambient light
+     * inside a group, this will stop finding it — update the traversal in
+     * that case.
+     *
+     * The spot light check is guarded because the light is created lazily
+     * by reinit() and may not exist yet on a freshly constructed box.
+     *
+     * @this {dice_box}
+     * @returns {void}
+     */
     that.dice_box.prototype._updateLighting = function _updateLighting() {
         for (let i = 0; i < this.scene.children.length; i++) {
             const child = this.scene.children[i];
@@ -3852,10 +4259,6 @@ var DICE = (function() {
         }
     }
 
-    // ---------------------------------------------------------------------
-    // EXPLOSION VISUAL EFFECTS
-    // ---------------------------------------------------------------------
-
     /**
      * Applies a subtle emissive glow to a physical die that exploded.
      * @param {THREE.Mesh} mesh - The die mesh.
@@ -3881,6 +4284,32 @@ var DICE = (function() {
         mesh._exploded = true;
     }
 
+    /**
+     * Applies a coloured emissive glow to a die that rolled a critical
+     * success or a critical failure.
+     *
+     * The highlight is a material-level effect: the die's existing materials
+     * are reused, but their `emissive` colour and intensity are set so the
+     * body glows green (success) or red (failure). This tints the whole die
+     * without changing its face textures, so the number remains readable.
+     *
+     * The highlight is idempotent — a second call on the same mesh is a
+     * no-op, tracked via the `_criticalHighlighted` flag. That matters
+     * because a die can be scanned in multiple phases: a die that explodes
+     * on a critical roll gets highlighted once during phase-0 evaluation,
+     * and we do not want subsequent phases to re-apply (or fight over) the
+     * emissive settings.
+     *
+     * The highlight does not persist across the fade-out; the fade animation
+     * takes over opacity and the die is eventually cleared, so the emissive
+     * change is scoped to the visible lifetime of the result.
+     *
+     * @param {THREE.Mesh} mesh - The physical die mesh to highlight. Silently
+     *        does nothing if the mesh or its material is missing.
+     * @param {boolean} isFailure - True to apply the failure (red) colour,
+     *        false to apply the success (green) colour.
+     * @returns {void}
+     */
     function apply_critical_highlight(mesh, isFailure) {
         if (!mesh || !mesh.material) return;
         if (mesh._criticalHighlighted) return;
@@ -3898,14 +4327,44 @@ var DICE = (function() {
         mesh._criticalHighlighted = true;
     }
 
+    /**
+     * Scans a phase's combined results and applies critical highlights to
+     * every die flagged as a critical success or critical failure.
+     *
+     * The `critical` and `failure` flags are set by apply_static_rules during
+     * phase evaluation, and this function is the visual counterpart: it walks
+     * the results, finds the corresponding physical meshes in the scene, and
+     * calls apply_critical_highlight on each one.
+     *
+     * For compound dice (d100), a single logical result corresponds to two
+     * physical meshes — a tens die and a units die. Both are highlighted,
+     * because visually they are read as one die. The `subResults` array
+     * carries the raw physical results for exactly this reason.
+     *
+     * Called once per phase, after apply_static_rules and
+     * apply_dropped_visuals_to_compound, and immediately before the render
+     * that displays the settled dice.
+     *
+     * @param {dice_box} box - The dice box whose `dices` array contains the
+     *        live meshes. Only meshes currently in the scene are highlighted.
+     * @param {Object[]} combined - The combined per-logical-die results for
+     *        the current phase, as produced by combine_compound_results and
+     *        annotated by apply_static_rules.
+     * @returns {void}
+     */
     function apply_result_highlights(box, combined) {
+        var meshMap = {};
+        for (var m = 0; m < box.dices.length; m++) {
+            meshMap[box.dices[m].dice_id] = box.dices[m];
+        }
+
         for (var i = 0; i < combined.length; i++) {
             var die = combined[i];
             if (!die.critical && !die.failure) continue;
             var isFailure = die.failure === true;
             var subs = die.subResults || [die];
             for (var j = 0; j < subs.length; j++) {
-                var mesh = box.dices.find(function(d) { return d.dice_id === subs[j].diceId; });
+                var mesh = meshMap[subs[j].diceId];
                 if (mesh) apply_critical_highlight(mesh, isFailure);
             }
         }
@@ -3946,20 +4405,59 @@ var DICE = (function() {
         return total;
     }
 
-    // ---------------------------------------------------------------------
-    // DICE GEOMETRIES / MATERIALS
-    // ---------------------------------------------------------------------
-
     /**
-     * Cache of generated dice geometry/materials.
-     */
+     * Cache of generated dice geometry, keyed by die type.
+     *
+     * Geometries are expensive to build — they involve chamfering polyhedra,
+     * computing face normals, and constructing Cannon.js collision shapes —
+     * so they are created lazily on first use and reused across every die of
+     * the same type in every roll.
+     *
+     * The cache stores one geometry per type, not per die instance, so all
+     * d20s in a roll share a single `THREE.Geometry` object. Materials are
+     * NOT shared in the same way — each die gets its own materials so that
+     * per-die features (dropped-dice greying, critical highlights, fade-out
+     * opacity) can vary independently.
+     *
+     * The cache is invalidated whenever `vars.scale` changes, via
+     * invalidateGeometryCache(). Scale changes happen on container resize and
+     * when the auto-shrink factor for a roll is recomputed, so entries have a
+     * shorter lifetime than you might expect in an interactive session.
+     *
+     * Cache keys are the geometry name prefixed by die type: `d4_geometry`,
+     * `d6_geometry`, and so on. d9 and d10 share `d10_geometry`, and d100
+     * also uses it because a physical d100 is a d10 with percentile labels.
+     *
+     * This object is module-private — it is not exposed on the public `DICE`
+     * API, so external callers cannot inspect or clear the cache directly.
+     *
+    * @type {Object}
+    */
     let threeD_dice = {};
 
     /**
-     * Returns the geometry for a given dice type, creating it if needed.
+     * Returns the cached geometry for a die type, creating it on first use.
      *
-     * @param {string} type - e.g., 'd6', 'd20', etc.
-     * @returns {THREE.Geometry|null}
+     * Creates each geometry at the size implied by the current `vars.scale`
+     * and the die-type-specific scale factor. The different factors (1.2 for
+     * d4, 1.1 for d6, 1.0 for d8 and d20, 0.9 for d10 family) reflect the
+     * fact that polyhedral dice need slightly different outer radii to look
+     * visually consistent when thrown together.
+     *
+     * d9 is mapped to the d10 geometry for historical reasons — the notation
+     * parser doesn't produce d9, but the original library supported it and the
+     * geometry is available if anything ever calls for it.
+     *
+     * If the cache has been invalidated (because `vars.scale` changed), the
+     * next call for each type will rebuild that geometry at the new size.
+     * Callers get whatever size is current at the moment of first use, so a
+     * roll that begins after a resize will use geometries sized for the new
+     * container, while dice already in the scene retain the old ones.
+     *
+     * @param {string} type - Die type, e.g. 'd4', 'd6', 'd20', 'd100'.
+     * @returns {THREE.Geometry|null} The cached (or newly created) geometry,
+     *          or null if the type is not recognised. Callers must handle the
+     *          null case; create_dice logs a warning and skips the die.
      */
     threeD_dice.getGeometry = function(type) {
         switch (type) {
@@ -4866,10 +5364,6 @@ var DICE = (function() {
         );
     }
 
-    // ---------------------------------------------------------------------
-    // HELPERS
-    // ---------------------------------------------------------------------
-
     /**
      * @brief Returns the smallest power of two that is greater than or equal to the given size.
      *
@@ -4889,8 +5383,27 @@ var DICE = (function() {
     }
 
     /**
-     * Returns the array of materials attached to a die mesh, regardless of
-     * whether it uses MeshFaceMaterial or a single material.
+     * Extracts the array of materials attached to a die mesh.
+     *
+     * Three.js uses two different material shapes depending on how a mesh was
+     * built. A plain material is a single object; a MeshFaceMaterial wraps an
+     * array under `.materials`, one entry per face group. Both shapes appear
+     * in the codebase — the animated pipeline uses MeshFaceMaterial, but a
+     * caller-provided mesh could use either.
+     *
+     * The fade-out system and the dropped-die visual swap both need to iterate
+     * materials and set opacity on each one. Rather than duplicating the shape
+     * check in both places, this helper normalises the access pattern into an
+     * always-an-array result.
+     *
+     * If the die is missing, has no material, or has a material shape that
+     * cannot be interpreted, an empty array is returned rather than throwing.
+     * Callers iterating the result simply do nothing, which is the correct
+     * behaviour for a mesh that is mid-construction or already torn down.
+     *
+     * @param {THREE.Mesh} dice - The die mesh to inspect.
+     * @returns {Array<THREE.Material>} The die's materials as a flat array.
+     *          Empty if the die has no materials.
      */
     function get_die_materials(dice) {
         if (!dice || !dice.material) return [];
@@ -4900,10 +5413,26 @@ var DICE = (function() {
     }
 
     /**
-     * Converts a colour value (number or string) to a CSS colour string.
+     * Converts a colour value to a '#RRGGBB' CSS string.
      *
-     * @param {number|string} color - e.g., 0xff0000 or '#ff0000'
-     * @returns {string} CSS colour string like '#ff0000'
+     * The die-face texture generator uses canvas 2D drawing, which requires
+     * colours as CSS strings rather than the numeric 0xRRGGBB form Three.js
+     * prefers. This is the bridge between the two conventions.
+     *
+     * Numeric input is padded to six hex digits and prefixed with '#'. String
+     * input is returned unchanged, on the assumption that if a caller passed a
+     * string they already formatted it correctly. That means a caller who
+     * passes 'red' or 'rgb(255,0,0)' will get it back verbatim, and canvas
+     * will happily accept either — the function is a converter, not a
+     * validator.
+     *
+     * Note this is distinct from colorToNumber, which does the opposite
+     * conversion for lights and physics materials. Both functions exist
+     * because different parts of Three.js accept different colour formats.
+     *
+     * @param {number|string} color - A 0xRRGGBB number or a CSS colour string.
+     * @returns {string} A CSS colour string of the form '#RRGGBB', or the
+     *          input string if it was already a string.
      */
     function colorToCSS(color) {
         if (typeof color === 'number') {
@@ -4915,11 +5444,27 @@ var DICE = (function() {
     /**
      * Returns a random floating point value in [0, 1).
      *
-     * This deliberately remains a tiny wrapper around Math.random() so that
-     * randomisation can later be replaced by an injected/seeded RNG without
-     * touching the rest of the physics code.
+     * This is the single source of randomness for the entire engine. Every
+     * die's initial position, velocity, spin, and orientation draws from it,
+     * which is why seeding the RNG gives fully reproducible rolls — not just
+     * reproducible face values.
      *
-     * @returns {number}
+     * When a seed has been set via setRngSeed (or setParam('rng_seed', n)),
+     * the seeded Mulberry32 generator takes over and produces the same
+     * sequence of values on every run with the same seed. When no seed is
+     * set, this falls through to Math.random(), which is fast and adequate
+     * for interactive use but not reproducible.
+     *
+     * The choice is made on every call rather than being captured once, so
+     * toggling the seed between rolls takes effect immediately without
+     * needing to reconstruct anything.
+     *
+     * All callers should go through this function rather than calling
+     * Math.random() directly. Doing otherwise creates a roll that cannot be
+     * reproduced even with a seed — the pattern was a real bug in the earlier
+     * version of this library.
+     *
+     * @returns {number} A pseudo-random float in [0, 1).
      */
     function rnd() {
         if (_rng) return _rng();
