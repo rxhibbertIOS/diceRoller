@@ -1,4 +1,3 @@
-// @ts-check
 /**
  * @fileoverview DieBuilder — a dependency-free, embeddable UI for building
  * and validating RPG dice notation strings (e.g. `4d6dl1`, `2d20kh1!>15`).
@@ -507,6 +506,14 @@
       return this.inject(element);
     }
 
+    /**
+     * Render the builder inside a container element (standalone mode).
+     * Replaces any existing content of the container.
+     *
+     * @param {string|HTMLElement} selector - Container selector or element.
+     * @returns {this}
+     * @fires DieBuilder#onError - If the container cannot be resolved.
+     */
     inject(selector) {
       this.container = getElement(selector);
       if (!this.container) { this._handleError(new Error('Container not found')); return this; }
@@ -519,6 +526,19 @@
       return this;
     }
 
+    /**
+     * Attach the builder to an existing `<input>` as a popup dialog. Sets up
+     * accessibility attributes (`aria-haspopup`, `aria-expanded`,
+     * `autocomplete="off"`) on the input, and — depending on
+     * `config.popup.trigger` — wires up focus handling and/or a floating trigger
+     * button.
+     *
+     * @param {string|HTMLElement} [inputSelector] - Input selector or element.
+     *   Falls back to `config.popup.targetInput` if omitted.
+     * @param {Object} [options={}] - Config overrides for this instance.
+     * @returns {this}
+     * @fires DieBuilder#onError - If the input cannot be resolved.
+     */
     attachTo(inputSelector, options = {}) {
       if (options) this.config = deepMerge(this.config, options);
       this.targetInput = getElement(inputSelector || this.config.popup.targetInput);
@@ -800,6 +820,13 @@
     // ============================================================
     // 5d. POPUP CONTROL
     // ============================================================
+    /**
+     * Open the popup. Re-parses the target input if its value has changed since
+     * the last sync, then positions the dialog below (or above) the input.
+     * No-op in standalone mode.
+     *
+     * @returns {void}
+     */
     show() {
       if (!this._isPopup) return;
 
@@ -843,6 +870,17 @@
       requestAnimationFrame(() => this._syncFlipHeight());
     }
 
+    /**
+   * Close the popup.
+   *
+   * When `accept` is `true`, the current state is validated first. If invalid,
+   * the popup stays open and inline errors are rendered. If valid, the notation
+   * is written to the target input, `input`/`change` events are dispatched, and
+   * `callbacks.onAccept` is fired.
+   *
+   * @param {boolean} [accept=false] - `true` to commit, `false` to cancel.
+   * @returns {void}
+   */
     hide(accept = false) {
       if (!this._isPopup) return;
 
@@ -897,12 +935,25 @@
     // ============================================================
     // 5e. NOTATION OPERATIONS
     // ============================================================
+    /**
+     * Build and return the current notation string from all valid groups.
+     * Invalid groups are silently omitted.
+     *
+     * @returns {string} e.g. `"4d6dl1+2d20kh1+5"`, or `""` if nothing is valid.
+     */
     getNotation() {
       const validGroups = this.groups.filter(g => this._isGroupValid(g));
       if (validGroups.length === 0) return '';
       return validGroups.map(g => this._buildGroupNotation(g)).join('+');
     }
 
+    /**
+     * Replace the current state by parsing a notation string. Triggers
+     * `callbacks.onChange`.
+     *
+     * @param {string} notation - Notation to parse. Forgiving about whitespace.
+     * @returns {this}
+     */
     setNotation(notation) {
       this._parseAndSetNotation(notation);
       this._refreshForm();
@@ -910,6 +961,12 @@
       return this;
     }
 
+    /**
+     * Remove all groups and reset the builder to an empty state. Triggers
+     * `callbacks.onClear` and `callbacks.onChange`.
+     *
+     * @returns {this}
+     */
     clear() {
       this.groups = [];
       this.groupCounter = 0;
@@ -920,8 +977,23 @@
       return this;
     }
 
+    /**
+     * Return a shallow copy of the current groups array. Mutating the result does
+     * not affect the builder — use {@link DieBuilder#addGroup} /
+     * {@link DieBuilder#removeGroup} for that.
+     *
+     * @returns {Group[]}
+     */
     getGroups() { return [...this.groups]; }
 
+    /**
+   * Append a group to the builder. Missing fields are filled with defaults
+   * (`quantity: 1`, `dieType: 'd6'`, one `'none'` rule, `bonus: 0`).
+   *
+   * @param {Partial<Group>} groupData
+   * @returns {this}
+   * @fires DieBuilder#onGroupAdd
+   */
     addGroup(groupData) {
       const group = this._defaultGroup();
       Object.assign(group, groupData);
@@ -937,6 +1009,13 @@
       return this;
     }
 
+    /**
+     * Remove the group at the given index.
+     *
+     * @param {number} index - Zero-based index.
+     * @returns {this}
+     * @fires DieBuilder#onGroupRemove
+     */
     removeGroup(index) {
       if (index >= 0 && index < this.groups.length) {
         const removed = this.groups.splice(index, 1)[0];
@@ -953,9 +1032,16 @@
     // ============================================================
 
     /**
-     * Validate the current builder state.
-     * @returns {{ valid: boolean, notation: string, errors: Array }}
-     *  Each error: { field, message, groupId?, groupIndex?, ruleIndex?, ruleId? }
+     * Validate the builder's current state.
+     *
+     * Combines built-in rule validation with any custom validator supplied via
+     * `config.validator`. Never throws.
+     *
+     * @returns {ValidationResult}
+     *
+     * @example
+     * const { valid, notation, errors } = builder.validate();
+     * if (!valid) errors.forEach(e => console.warn(e.field, e.message));
      */
     validate() {
       const notation = this.getNotation();
@@ -972,7 +1058,10 @@
 
     /**
      * Validate an arbitrary notation string without touching current state.
-     * @returns {{ valid: boolean, notation: string, errors: Array }}
+     * Useful for validating user input before committing it.
+     *
+     * @param {string} str - Notation to validate.
+     * @returns {ValidationResult}
      */
     validateNotation(str) {
       const notation = (str || '').trim();
@@ -986,7 +1075,10 @@
       return { valid: errors.length === 0, notation, errors };
     }
 
-    /** Quick boolean shortcut. */
+    /**
+     * Boolean shortcut for {@link DieBuilder#validate}.
+     * @returns {boolean}
+     */
     isValid() { return this.validate().valid; }
 
     // -- Internal validation helpers --
@@ -1140,6 +1232,12 @@
     // ============================================================
     // 5g. HELP / FLIP
     // ============================================================
+    /**
+     * Toggle the help / glossary panel. In popup mode this flips the card; in
+     * standalone mode it shows or hides the inline panel.
+     *
+     * @returns {void}
+     */
     toggleHelp() {
       if (this._isPopup) {
         this._flipTo(!this._helpVisible);
@@ -2640,6 +2738,13 @@
     // ============================================================
     // 5q. DESTROY
     // ============================================================
+    /**
+     * Tear down the instance. Removes the popup DOM, the trigger button, event
+     * listeners, the focus trap, and the ResizeObserver. After `destroy()` the
+     * instance is unusable — discard your reference.
+     *
+     * @returns {this}
+     */
     destroy() {
       this._eventListeners.forEach(({ el, event, handler }) => {
         el.removeEventListener(event, handler);
