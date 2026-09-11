@@ -265,6 +265,14 @@ var DICE = (function() {
         max_recursion_depth: 50,        // prevent infinite loops
         max_dice_per_roll: 100,         // safety cap for total dice
         explosion_delay_ms: 300,        // delay before exploding dice are rolled
+
+        // Size control
+        size_multiplier: 1.0,              // user-facing "make dice bigger/smaller" (0.5–2.0 sensible range)
+
+        auto_scale_enabled: true,          // shrink automatically based on dice count?
+        auto_scale_baseline_dice: 6,       // count at which the base size is used unchanged
+        auto_scale_exponent: 0.5,          // 0.5 => area-preserving; raise for more aggressive shrink
+        auto_scale_min_factor: 0.35,       // never shrink below this fraction of base size
     };
 
     /**
@@ -448,6 +456,12 @@ var DICE = (function() {
     max_recursion_depth: { type: 'integer', min: 1, max: 50, default: 10, description: 'Maximum explosion/reroll recursions' },
     max_dice_per_roll: { type: 'integer', min: 1, max: 500, default: 100, description: 'Safety cap on total dice generated' },
     explosion_delay_ms: { type: 'integer', min: 0, max: 1500, default: 300, description: 'Delay before exploding dice are rolled (ms)' },
+
+    size_multiplier:          { type: 'number',  min: 0.1,  max: 3.0,  default: 1.0,  description: 'Global size multiplier for dice' },
+    auto_scale_enabled:       { type: 'boolean', default: true,         description: 'Shrink dice automatically when many are rolled' },
+    auto_scale_baseline_dice: { type: 'integer', min: 1,    max: 50,   default: 6,    description: 'Dice count at which base size is used' },
+    auto_scale_exponent:      { type: 'number',  min: 0,    max: 1.5,  default: 0.5,  description: 'Auto-shrink curve exponent' },
+    auto_scale_min_factor:    { type: 'number',  min: 0.05, max: 1.0,  default: 0.35, description: 'Minimum auto-shrink factor' },
     };
 
     // Helper to get current values from vars or instance
@@ -481,7 +495,12 @@ var DICE = (function() {
             d100_compound: () => vars.d100_compound,
             max_recursion_depth: () => vars.max_recursion_depth,
             max_dice_per_roll: () => vars.max_dice_per_roll,
-            explosion_delay_ms: () => vars.explosion_delay_ms
+            explosion_delay_ms: () => vars.explosion_delay_ms,
+            size_multiplier:          () => vars.size_multiplier,
+            auto_scale_enabled:       () => vars.auto_scale_enabled, 
+            auto_scale_baseline_dice: () => vars.auto_scale_baseline_dice,
+            auto_scale_exponent:      () => vars.auto_scale_exponent,
+            auto_scale_min_factor:    () => vars.auto_scale_min_factor,
         };
         return map[name] ? map[name]() : undefined;
     }
@@ -532,9 +551,23 @@ var DICE = (function() {
 
         this.reinit(container);
 
-        $t.bind(container, 'resize', function() {
-            this.reinit(this.container);
-        });
+        var box = this;
+        
+        var scheduleResize = function() {
+        if (box._resizeScheduled) return;
+            box._resizeScheduled = true;
+            requestAnimationFrame(function() {
+                box._resizeScheduled = false;
+                box.reinit(box.container);
+            });
+        };
+
+        if (typeof ResizeObserver !== 'undefined') {
+            box._resizeObserver = new ResizeObserver(scheduleResize);
+            box._resizeObserver.observe(container);
+        } else {
+            $t.bind(window, 'resize', scheduleResize);
+        }
 
         /*
          * Physics world setup.
@@ -597,6 +630,7 @@ var DICE = (function() {
          * Four invisible physics barriers around the dice tray.
          */
         var barrier;
+        this._barriers =[];
 
         barrier = new CANNON.RigidBody(
             0,
@@ -609,6 +643,7 @@ var DICE = (function() {
         );
         barrier.position.set(0, this.h * 0.93, 0);
         this.world.add(barrier);
+        this._barriers.push(barrier);
 
         barrier = new CANNON.RigidBody(
             0,
@@ -621,6 +656,7 @@ var DICE = (function() {
         );
         barrier.position.set(0, -this.h * 0.93, 0);
         this.world.add(barrier);
+        this._barriers.push(barrier);
 
         barrier = new CANNON.RigidBody(
             0,
@@ -633,6 +669,7 @@ var DICE = (function() {
         );
         barrier.position.set(this.w * 0.93, 0, 0);
         this.world.add(barrier);
+        this._barriers.push(barrier);
 
         barrier = new CANNON.RigidBody(
             0,
@@ -645,6 +682,7 @@ var DICE = (function() {
         );
         barrier.position.set(-this.w * 0.93, 0, 0);
         this.world.add(barrier);
+        this._barriers.push(barrier);
 
         this.last_time = 0;
         this.running = false;
@@ -665,10 +703,19 @@ var DICE = (function() {
      * @param {HTMLElement} container
      */
     that.dice_box.prototype.reinit = function(container) {
+        console.log('[reinit] container', container.clientWidth, 'x', container.clientHeight,
+            '| old this.cw/ch', this.cw, this.ch);
 
-        this.cw = container.clientWidth / 2;
-        this.ch = container.clientHeight / 2;
+        var newCw = container.clientWidth / 2;
+        var newCh = container.clientHeight / 2;
 
+        // Nothing meaningful changed — skip the expensive rebuild.
+        if (this.camera && newCw === this.cw && newCh === this.ch) {
+            return;
+        }
+
+        this.cw = newCw;
+        this.ch = newCh;
         this.w = this.cw;
         this.h = this.ch;
 
@@ -677,11 +724,13 @@ var DICE = (function() {
             this.ch / this.h
         );
 
-        vars.scale =
-            Math.sqrt(
-                this.w * this.w +
-                this.h * this.h
-            ) / 8;
+        // Only recompute the base scale when the container actually has a size.
+        // If it's hidden (display:none, detached, mid-layout), leave the previous
+        // values alone so a resize-while-hidden doesn't wipe a working scale.
+        if (this.w > 0 && this.h > 0) {
+            this._baseScale = Math.sqrt(this.w * this.w + this.h * this.h) / 8;
+            applyScaleForCount(this, this._lastDiceCount || 0);
+        }
 
         this.renderer.setSize(
             this.cw * 2,
@@ -759,10 +808,27 @@ var DICE = (function() {
         this.desk.receiveShadow = vars.use_shadows;
         this.scene.add(this.desk);
 
+        this._updateBarriers();
+        console.log('[reinit] done',
+            'w=', this.w, 'h=', this.h,
+            'base=', this._baseScale,
+            'scale=', vars.scale,
+            'barriers=', this._barriers && this._barriers.map(b => [b.position.x, b.position.y]));
+
         this.renderer.render(
             this.scene,
             this.camera
         );
+    };
+
+    that.dice_box.prototype._updateBarriers = function() {
+        if (!this._barriers || this._barriers.length !== 4) return;
+        var hy = this.h * 0.93;
+        var wx = this.w * 0.93;
+        this._barriers[0].position.set(0,  hy, 0);   // +Y
+        this._barriers[1].position.set(0, -hy, 0);   // -Y
+        this._barriers[2].position.set( wx, 0, 0);   // +X
+        this._barriers[3].position.set(-wx, 0, 0);   // -X
     };
 
     /**
@@ -2200,6 +2266,10 @@ var DICE = (function() {
 
         // Parse notation
         var notation = that.parse_notation(box.diceToRoll);
+        console.log('[throw] w=', box.w, 'h=', box.h, 'base=', box._baseScale,
+            'scale=', vars.scale, 'count=', notation.set.length,
+            'dist=', dist, 'vector=', vector.x, vector.y);
+        applyScaleForCount(box, notation.set.length);
         box._originalNotation = notation;
         console.log('Dice Roll: Parsed notation:', notation);
 
@@ -3332,6 +3402,25 @@ var DICE = (function() {
                 break;
             case 'max_dice_per_roll':
                 vars.max_dice_per_roll = value;
+                break;
+            case 'size_multiplier':
+                vars.size_multiplier = value;
+                applyScaleForCount(instance, instance._lastDiceCount || 0);
+                break;
+            case 'auto_scale_enabled':
+                vars.auto_scale_enabled = value;
+                break;
+
+            case 'auto_scale_baseline_dice':
+                vars.auto_scale_baseline_dice = value;
+                break;
+
+            case 'auto_scale_exponent':
+                vars.auto_scale_exponent = value;
+                break;
+
+            case 'auto_scale_min_factor':
+                vars.auto_scale_min_factor = value;
                 break;
             default:
                 throw new Error(`Unhandled parameter "${name}"`);
@@ -4824,6 +4913,61 @@ var DICE = (function() {
     }
 
     /**
+     * Clears the cached dice geometries so that a subsequent
+     * call to threeD_dice.getGeometry() rebuilds them at the current
+     * vars.scale. Called whenever vars.scale changes.
+     */
+    function invalidateGeometryCache() {
+        delete threeD_dice.d4_geometry;
+        delete threeD_dice.d6_geometry;
+        delete threeD_dice.d8_geometry;
+        delete threeD_dice.d10_geometry;
+        delete threeD_dice.d12_geometry;
+        delete threeD_dice.d20_geometry;
+    }
+
+    /**
+     * Computes the effective world scale for a throw, given the number of
+     * physical dice that will be created in the first phase.
+     *
+     * The dice shrink as the count rises, according to:
+     *
+     *     factor = clamp((baseline / count) ^ exponent, minFactor, 1)
+     *     scale  = baseScale * size_multiplier * factor
+     *
+     * With the defaults (baseline=6, exponent=0.5, minFactor=0.35):
+     *
+     *     1–6 dice   -> full base size
+     *     12 dice    -> ~71% of base
+     *     24 dice    -> ~50% of base
+     *     50+ dice   -> ~35% of base (clamped)
+     *
+     * @param {dice_box} box
+     * @param {number} count - physical dice count in the first phase
+     */
+    function applyScaleForCount(box, count) {
+        box._lastDiceCount = count;
+        var base = box._baseScale || vars.scale || 100;
+        var userMul = Math.max(0.1, vars.size_multiplier || 1.0);
+
+        var factor = 1;
+        if (vars.auto_scale_enabled && count > 0) {
+            var baseline = Math.max(1, vars.auto_scale_baseline_dice);
+            var exp = Math.max(0, vars.auto_scale_exponent);
+            var minF = Math.max(0.05, Math.min(1, vars.auto_scale_min_factor));
+            factor = Math.pow(baseline / count, exp);
+            factor = Math.max(minF, Math.min(1, factor));
+        }
+
+        var newScale = base * userMul * factor;
+
+        if (newScale !== vars.scale) {
+            vars.scale = newScale;
+            invalidateGeometryCache();
+        }
+    }
+
+    /**
      * Creates the chamfered version of a polyhedron.
      *
      * The original dice geometry algorithm is retained here unchanged in
@@ -5218,6 +5362,14 @@ var DICE = (function() {
      * @returns {number}
      */
     function get_dice_value(dice) {
+        if (isNaN(dice.body.position.x) || isNaN(dice.body.quaternion.x) ||
+            isNaN(dice.body.velocity.x) || isNaN(dice.body.angularVelocity.x)) {
+            console.warn('[nan-body]', dice.dice_id, dice.dice_type,
+                'pos', dice.body.position,
+                'quat', dice.body.quaternion,
+                'vel', dice.body.velocity,
+                'ang', dice.body.angularVelocity);
+        }
 
         var vector =
             new THREE.Vector3(
