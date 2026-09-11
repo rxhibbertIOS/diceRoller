@@ -1,5 +1,5 @@
 /* ============================================================
-   Dice Forge — application logic
+   Dice Tray — application logic
    Wires DICE.js + DieBuilder into the two-panel UI.
    ============================================================ */
 (function () {
@@ -207,7 +207,7 @@
       box.setParam(key, value);
       return true;
     } catch (err) {
-      console.warn('[Dice Forge] setParam("' + key + '") rejected:', err && err.message ? err.message : err);
+      console.warn('[Dice Tray] setParam("' + key + '") rejected:', err && err.message ? err.message : err);
       return false;
     }
   }
@@ -448,7 +448,7 @@
      ========================================================== */
   function initBuilder() {
     if (typeof window.DieBuilder !== 'function') {
-      console.warn('[Dice Forge] DieBuilder not found — manual notation still works.');
+      console.warn('[Dice Tray] DieBuilder not found — manual notation still works.');
       return;
     }
 
@@ -504,7 +504,7 @@
         }
       });
     } catch (err) {
-      console.warn('[Dice Forge] DieBuilder init failed:', err);
+      console.warn('[Dice Tray] DieBuilder init failed:', err);
     }
   }
 
