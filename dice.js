@@ -268,11 +268,15 @@ var DICE = (function() {
 
         // Size control
         size_multiplier: 1.0,              // user-facing "make dice bigger/smaller" (0.5–2.0 sensible range)
-
         auto_scale_enabled: true,          // shrink automatically based on dice count?
         auto_scale_baseline_dice: 6,       // count at which the base size is used unchanged
         auto_scale_exponent: 0.5,          // 0.5 => area-preserving; raise for more aggressive shrink
         auto_scale_min_factor: 0.35,       // never shrink below this fraction of base size
+
+        // Fade-out control
+        fade_enabled: true,          // false disables fade entirely
+        fade_delay_ms: 3000,         // how long after the roll settles before fading begins
+        fade_duration_ms: 800,       // how long the fade takes
     };
 
     /**
@@ -456,12 +460,18 @@ var DICE = (function() {
     max_recursion_depth: { type: 'integer', min: 1, max: 50, default: 10, description: 'Maximum explosion/reroll recursions' },
     max_dice_per_roll: { type: 'integer', min: 1, max: 500, default: 100, description: 'Safety cap on total dice generated' },
     explosion_delay_ms: { type: 'integer', min: 0, max: 1500, default: 300, description: 'Delay before exploding dice are rolled (ms)' },
-
+    
+    // Size control
     size_multiplier:          { type: 'number',  min: 0.1,  max: 3.0,  default: 1.0,  description: 'Global size multiplier for dice' },
     auto_scale_enabled:       { type: 'boolean', default: true,         description: 'Shrink dice automatically when many are rolled' },
     auto_scale_baseline_dice: { type: 'integer', min: 1,    max: 50,   default: 6,    description: 'Dice count at which base size is used' },
     auto_scale_exponent:      { type: 'number',  min: 0,    max: 1.5,  default: 0.5,  description: 'Auto-shrink curve exponent' },
     auto_scale_min_factor:    { type: 'number',  min: 0.05, max: 1.0,  default: 0.35, description: 'Minimum auto-shrink factor' },
+
+    // Fade-out control
+    fade_enabled:     { type: 'boolean', default: true, description: 'Fade dice out after a roll' },
+    fade_delay_ms:    { type: 'integer', min: 0, max: 60000, default: 3000, description: 'Delay before fade begins (ms)' },
+    fade_duration_ms: { type: 'integer', min: 0, max: 10000, default: 800, description: 'Fade duration (ms)' },
     };
 
     // Helper to get current values from vars or instance
@@ -501,6 +511,9 @@ var DICE = (function() {
             auto_scale_baseline_dice: () => vars.auto_scale_baseline_dice,
             auto_scale_exponent:      () => vars.auto_scale_exponent,
             auto_scale_min_factor:    () => vars.auto_scale_min_factor,
+            fade_enabled:     () => vars.fade_enabled,
+            fade_delay_ms:    () => vars.fade_delay_ms,
+            fade_duration_ms: () => vars.fade_duration_ms,
         };
         return map[name] ? map[name]() : undefined;
     }
@@ -703,8 +716,6 @@ var DICE = (function() {
      * @param {HTMLElement} container
      */
     that.dice_box.prototype.reinit = function(container) {
-        console.log('[reinit] container', container.clientWidth, 'x', container.clientHeight,
-            '| old this.cw/ch', this.cw, this.ch);
 
         var newCw = container.clientWidth / 2;
         var newCh = container.clientHeight / 2;
@@ -809,11 +820,6 @@ var DICE = (function() {
         this.scene.add(this.desk);
 
         this._updateBarriers();
-        console.log('[reinit] done',
-            'w=', this.w, 'h=', this.h,
-            'base=', this._baseScale,
-            'scale=', vars.scale,
-            'barriers=', this._barriers && this._barriers.map(b => [b.position.x, b.position.y]));
 
         this.renderer.render(
             this.scene,
@@ -887,7 +893,6 @@ var DICE = (function() {
             options = {};
         }
         const opts = options || {};
-        console.log('Dice Roll: Starting throw with notation:', this.diceToRoll);
 
         var box = this;
 
@@ -1512,9 +1517,7 @@ var DICE = (function() {
             console.warn('Dice Roll: No dice in notation (constant-only expressions are not allowed).');
         }
 
-        if (!ret.error) {
-            console.log('Dice Roll: Notation parsed successfully. Groups:', ret.groups.length, 'Physical dice:', ret.set.length);
-        } else {
+        if (ret.error) {
             console.warn('Dice Roll: Notation parse had errors. Results may be incomplete.');
         }
 
@@ -2234,8 +2237,8 @@ var DICE = (function() {
             auditString: that.formatAudit(audit),
             error: false
         };
-        console.log('Dice Roll: Final result:', notation.resultString, 'Total:', notation.resultTotal);
-        console.table(notation);
+        console.log('Dice Roll: Final result:', notation.resultString, 'Total:', notation.resultTotal, 'Full Result:', notation);
+
         box.rolling = false;
         try {
             if (afterRollCb) afterRollCb(notation);
@@ -2243,6 +2246,7 @@ var DICE = (function() {
             var err = createDiceError('CALLBACK_ERROR', 'Error in after_roll callback', e);
             _handleDiceError(box, err, afterRollCb, notation);
         }
+        box._scheduleFade();
     }
 
     // ---------------------------------------------------------------------
@@ -2266,12 +2270,8 @@ var DICE = (function() {
 
         // Parse notation
         var notation = that.parse_notation(box.diceToRoll);
-        console.log('[throw] w=', box.w, 'h=', box.h, 'base=', box._baseScale,
-            'scale=', vars.scale, 'count=', notation.set.length,
-            'dist=', dist, 'vector=', vector.x, vector.y);
         applyScaleForCount(box, notation.set.length);
         box._originalNotation = notation;
-        console.log('Dice Roll: Parsed notation:', notation);
 
         if (notation.error) {
             if (after_roll) after_roll(notation);
@@ -2308,7 +2308,6 @@ var DICE = (function() {
             try {
                 request_results = before_roll(notation);
                 if (request_results && request_results.length) {
-                    console.log('Dice Roll: Forced results provided for first phase:', request_results);
                 }
             } catch (e) {
                 var err = createDiceError('CALLBACK_ERROR', 'Error in before_roll callback', e);
@@ -2384,10 +2383,10 @@ var DICE = (function() {
                         notation.audit = audit;
                         notation.auditString = that.formatAudit(audit);
                         if (after_roll) after_roll(notation);
-                        console.log('Dice Roll: Final result:', notation.resultString, 'Total:', notation.resultTotal);
-                        console.table(notation);
+                        console.log('Dice Roll: Final result:', notation.resultString, 'Total:', notation.resultTotal, 'Full Result:', notation);
                         box.rolling = false;
                         vars.use_adaptive_timestep = uat;
+                        box._scheduleFade();
                     } catch (e) {
                         var err = createDiceError('UNKNOWN_ERROR', null, e);
                         _handleDiceError(box, err, after_roll, notation);
@@ -2973,6 +2972,15 @@ var DICE = (function() {
      */
     that.dice_box.prototype.clear = function() {
 
+        if (this._fadeTimeout) {
+            clearTimeout(this._fadeTimeout);
+            this._fadeTimeout = null;
+        }
+        if (this._fadeRafId) {
+            cancelAnimationFrame(this._fadeRafId);
+            this._fadeRafId = null;
+        }
+
         this.running = false;
 
         var dice;
@@ -3014,6 +3022,89 @@ var DICE = (function() {
             },
             100
         );
+    };
+
+    /**
+     * Schedules a fade-out of all current dice, then clears them.
+     *
+     * Cancels any fade already in progress. Called automatically at the end
+     * of a roll, but safe to call manually.
+     */
+    that.dice_box.prototype._scheduleFade = function() {
+        var box = this;
+
+        if (box._fadeTimeout) {
+            clearTimeout(box._fadeTimeout);
+            box._fadeTimeout = null;
+        }
+        if (box._fadeRafId) {
+            cancelAnimationFrame(box._fadeRafId);
+            box._fadeRafId = null;
+        }
+
+        if (!vars.fade_enabled) return;
+
+        var delay = Math.max(0, vars.fade_delay_ms || 0);
+        if (delay === 0) {
+            box._startFade();
+        } else {
+            box._fadeTimeout = setTimeout(function() {
+                box._fadeTimeout = null;
+                box._startFade();
+            }, delay);
+        }
+    };
+
+    /**
+     * Begins the fade animation. When opacity reaches zero, clears all dice.
+     */
+    that.dice_box.prototype._startFade = function() {
+        var box = this;
+        var duration = Math.max(0, vars.fade_duration_ms || 0);
+
+        if (!box.dices.length) return;
+
+        if (duration === 0) {
+            box.clear();
+            return;
+        }
+
+        // Kill shadows so they don't linger after the bodies vanish.
+        for (var s = 0; s < box.dices.length; s++) {
+            box.dices[s].castShadow = false;
+        }
+
+        var startTime = null;
+        var rafId = null;
+
+        function step(now) {
+            if (box._fadeRafId !== rafId) return;
+
+            if (startTime === null) startTime = now;
+            var t = (now - startTime) / duration;
+            if (t > 1) t = 1;
+
+            var opacity = 1 - t;
+            for (var i = 0; i < box.dices.length; i++) {
+                var mats = get_die_materials(box.dices[i]);
+                for (var m = 0; m < mats.length; m++) {
+                    mats[m].opacity = opacity;
+                }
+            }
+
+            box.renderer.render(box.scene, box.camera);
+
+            if (t < 1) {
+                rafId = requestAnimationFrame(step);
+                box._fadeRafId = rafId;
+            } else {
+                box._fadeRafId = null;
+                box.clear();
+            }
+        }
+
+        rafId = requestAnimationFrame(step);
+        box._fadeRafId = rafId;
     };
 
     /**
@@ -3422,6 +3513,19 @@ var DICE = (function() {
             case 'auto_scale_min_factor':
                 vars.auto_scale_min_factor = value;
                 break;
+
+            case 'fade_enabled':
+                vars.fade_enabled = value;
+                break;
+
+            case 'fade_delay_ms':
+                vars.fade_delay_ms = value;
+                break;
+
+            case 'fade_duration_ms':
+                vars.fade_duration_ms = value;
+                break;
+
             default:
                 throw new Error(`Unhandled parameter "${name}"`);
         }
@@ -3661,9 +3765,6 @@ var DICE = (function() {
                     droppedCount++;
                 }
             }
-        }
-        if (droppedCount > 0) {
-            console.log('Dice Roll: Dropped visuals applied to', droppedCount, 'physical dice (', combinedResults.filter(r=>!r.kept).length, 'logical dice )');
         }
     }
 
@@ -4182,6 +4283,7 @@ var DICE = (function() {
                     $t.copyto(
                         materialOptions,
                         {
+                            transparent: true,
                             map:
                                 create_text_texture(
                                     face_labels[i],
@@ -4324,6 +4426,7 @@ var DICE = (function() {
                     $t.copyto(
                         materialOptions,
                         {
+                            transparent: true,
                             map:
                                 create_d4_text(
                                     labels[i],
@@ -4669,6 +4772,17 @@ var DICE = (function() {
     function calc_texture_size(size) {
         if (size < 1) return 1;
         return Math.pow(2, Math.ceil(Math.log2(size)));
+    }
+
+    /**
+     * Returns the array of materials attached to a die mesh, regardless of
+     * whether it uses MeshFaceMaterial or a single material.
+     */
+    function get_die_materials(dice) {
+        if (!dice || !dice.material) return [];
+        if (Array.isArray(dice.material)) return dice.material;
+        if (dice.material.materials) return dice.material.materials;
+        return [dice.material];
     }
 
     /**
