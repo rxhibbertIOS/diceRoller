@@ -86,6 +86,28 @@ var DICE = (function() {
         UNKNOWN_ERROR: 'An unexpected error occurred during the dice roll.',
     };
 
+    function _clearRollWatchdog(box) {
+        if (box._rollWatchdog) {
+            clearTimeout(box._rollWatchdog);
+            box._rollWatchdog = null;
+        }
+    }
+
+    function _setRollWatchdog(box, notation) {
+        _clearRollWatchdog(box);
+        var timeoutMs = vars.roll_timeout_ms;
+        if (!timeoutMs || timeoutMs <= 0) return;
+
+        box._rollWatchdog = setTimeout(function() {
+            box._rollWatchdog = null;
+            if (!box.rolling) return;
+            console.warn('Dice Roll: roll exceeded timeout of', timeoutMs, 'ms — resetting rolling flag');
+            box.rolling = false;
+            // Deliberately do NOT clear dice here — the pipeline may still be
+            // mid-flight and would recreate them anyway on the next phase.
+        }, timeoutMs);
+    }
+
     /**
      * Creates a structured error object for the dice engine.
      *
@@ -122,6 +144,7 @@ var DICE = (function() {
         // Clear any dice left in the scene
         try { box.clear(); } catch (e) { /* ignore */ }
         box.rolling = false;
+        _clearRollWatchdog(box);
         // Build an error notation
         var err = createDiceError(
             error.code || 'UNKNOWN_ERROR',
@@ -190,6 +213,30 @@ var DICE = (function() {
             case 'equal':         return '=' + threshold;
             default:              return '>' + threshold;
         }
+    }
+
+    var rngSeed = null;
+    var _rng = null;
+
+    function mulberry32(a) {
+        return function() {
+            a |= 0;
+            a = (a + 0x6D2B79F5) | 0;
+            var t = a;
+            t = Math.imul(t ^ (t >>> 15), t | 1);
+            t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+            return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+        };
+    }
+
+    function setRngSeed(seed) {
+        if (seed === null || seed === undefined) {
+            rngSeed = null;
+            _rng = null;
+            return;
+        }
+        rngSeed = seed;
+        _rng = mulberry32(seed);
     }
 
     /**
@@ -277,6 +324,9 @@ var DICE = (function() {
         fade_enabled: true,          // false disables fade entirely
         fade_delay_ms: 3000,         // how long after the roll settles before fading begins
         fade_duration_ms: 800,       // how long the fade takes
+
+        roll_timeout_ms: 20000,   // force-reset box.rolling if a roll exceeds this
+        rng_seed: null,           // null = Math.random()
     };
 
     /**
@@ -472,6 +522,9 @@ var DICE = (function() {
     fade_enabled:     { type: 'boolean', default: true, description: 'Fade dice out after a roll' },
     fade_delay_ms:    { type: 'integer', min: 0, max: 60000, default: 3000, description: 'Delay before fade begins (ms)' },
     fade_duration_ms: { type: 'integer', min: 0, max: 10000, default: 800, description: 'Fade duration (ms)' },
+
+    roll_timeout_ms: { type: 'integer', min: 0, max: 120000, default: 20000, description: 'Max time (ms) before a roll is force-reset (0 = disabled)' },
+    rng_seed:        { type: 'integer', min: 0, max: 0x7FFFFFFF, default: null, nullable: true, description: 'Seed for deterministic rolls (null = random)' },
     };
 
     // Helper to get current values from vars or instance
@@ -514,6 +567,8 @@ var DICE = (function() {
             fade_enabled:     () => vars.fade_enabled,
             fade_delay_ms:    () => vars.fade_delay_ms,
             fade_duration_ms: () => vars.fade_duration_ms,
+            roll_timeout_ms: () => vars.roll_timeout_ms,
+            rng_seed:        () => rngSeed,
         };
         return map[name] ? map[name]() : undefined;
     }
@@ -881,53 +936,62 @@ var DICE = (function() {
      *        Optional callback called after the physical roll has completed
      *        and the results have been evaluated.
      */
-    that.dice_box.prototype.start_throw = function(
-        options,
-        before_roll,
-        after_roll
-    ) {
-
+    that.dice_box.prototype.start_throw = function(options, before_roll, after_roll) {
         if (typeof options === 'function') {
             after_roll = before_roll;
             before_roll = options;
             options = {};
         }
         const opts = options || {};
+        const box = this;
 
-        var box = this;
+        return new Promise(function(resolve, reject) {
+            if (box.rolling) {
+                console.warn('Dice Roll: Already rolling, ignoring request.');
+                reject(createDiceError('ROLL_IN_PROGRESS', 'A roll is already in progress.'));
+                return;
+            }
 
-        if (box.rolling) {
-            console.warn('Dice Roll: Already rolling, ignoring request.');
-            return;
-        }
-
-        try {
-
-            var vector = opts.vector || {
-                x: (rnd() * 2 - 1) * box.w,
-                y: -(rnd() * 2 - 1) * box.h
+            var userAfter = after_roll;
+            var wrappedAfter = function(notation) {
+                if (userAfter) {
+                    try {
+                        userAfter(notation);
+                    } catch (e) {
+                        console.error('Dice Roll: Error in after_roll callback:', e);
+                    }
+                }
+                if (notation && notation.error) {
+                    reject(notation);
+                } else {
+                    resolve(notation);
+                }
             };
 
-            var dist = Math.sqrt(
-                vector.x * vector.x +
-                vector.y * vector.y
-            );
+            try {
+                var vector = opts.vector || {
+                    x: (rnd() * 2 - 1) * box.w,
+                    y: -(rnd() * 2 - 1) * box.h
+                };
+                var dist = Math.sqrt(vector.x * vector.x + vector.y * vector.y);
+                var boost = opts.boost || (rnd() + 3) * dist;
 
-            var boost = opts.boost || (rnd() + 3) * dist;
+                // Guard against a degenerate container/throw vector.
+                if (!isFinite(dist) || dist === 0 || box.w === 0 || box.h === 0) {
+                    var err = createDiceError(
+                        'RENDER_FAILED',
+                        'Container has no size or throw vector is degenerate.'
+                    );
+                    _handleDiceError(box, err, wrappedAfter, null);
+                    return;
+                }
 
-            throw_dices(
-                box,
-                vector,
-                boost,
-                dist,
-                before_roll,
-                after_roll
-            );
-        } catch (e) {
-            // If an unexpected error occurs, wrap it and call after_roll with error notation.
-            var err = createDiceError('RENDER_FAILED', null, e);
-            _handleDiceError(box, err, after_roll, null);
-        }
+                throw_dices(box, vector, boost, dist, before_roll, wrappedAfter);
+            } catch (e) {
+                var err = createDiceError('RENDER_FAILED', null, e);
+                _handleDiceError(box, err, wrappedAfter, null);
+            }
+        });
     };
 
     /**
@@ -951,30 +1015,19 @@ var DICE = (function() {
         const minBoost = opts.minBoost !== undefined ? opts.minBoost : 2.0;
         const maxBoost = opts.maxBoost !== undefined ? opts.maxBoost : 5.0;
         const angle = opts.angle;
-
         const box = this;
-        if (box.rolling) {
-            console.warn('Dice Roll: Already rolling, ignoring request.');
-            return;
-        }
 
         let vector;
         if (angle !== undefined) {
-            vector = {
-                x: Math.cos(angle) * box.w,
-                y: -Math.sin(angle) * box.h
-            };
+            vector = { x: Math.cos(angle) * box.w, y: -Math.sin(angle) * box.h };
         } else {
-            vector = {
-                x: (rnd() * 2 - 1) * box.w,
-                y: -(rnd() * 2 - 1) * box.h
-            };
+            vector = { x: (rnd() * 2 - 1) * box.w, y: -(rnd() * 2 - 1) * box.h };
         }
         const dist = Math.sqrt(vector.x * vector.x + vector.y * vector.y);
         const boostFactor = rnd() * (maxBoost - minBoost) + minBoost;
         const boost = boostFactor * dist;
 
-        this.start_throw({ vector, boost }, before_roll, after_roll);
+        return this.start_throw({ vector, boost }, before_roll, after_roll);
     };
 
     /**
@@ -2052,6 +2105,7 @@ var DICE = (function() {
                 // Apply static rules (keep/drop, sort, criticals)
                 apply_static_rules(parsedNotation, combined, audit, depth);
                 apply_dropped_visuals_to_compound(combined, box.dices);
+                apply_result_highlights(box, combined);
                 box.renderer.render(box.scene, box.camera);   
 
                 // Process dynamic rules (explode, reroll) – these may generate new dice
@@ -2240,6 +2294,7 @@ var DICE = (function() {
         console.log('Dice Roll: Final result:', notation.resultString, 'Total:', notation.resultTotal, 'Full Result:', notation);
 
         box.rolling = false;
+        _clearRollWatchdog(box);
         try {
             if (afterRollCb) afterRollCb(notation);
         } catch (e) {
@@ -2301,6 +2356,7 @@ var DICE = (function() {
         }
 
         box.rolling = true;
+        _setRollWatchdog(box, notation);
 
         // Handle before_roll callback (only for first phase)
         var request_results = null;
@@ -2360,6 +2416,7 @@ var DICE = (function() {
                         // Apply keep/drop with audit
                         apply_static_rules(notation, combined, audit, 0);
                         apply_dropped_visuals_to_compound(combined, box.dices);
+                        apply_result_highlights(box, combined);
                         box.renderer.render(box.scene, box.camera);   
 
                         // Build final notation
@@ -2385,6 +2442,7 @@ var DICE = (function() {
                         if (after_roll) after_roll(notation);
                         console.log('Dice Roll: Final result:', notation.resultString, 'Total:', notation.resultTotal, 'Full Result:', notation);
                         box.rolling = false;
+                        _clearRollWatchdog(box);
                         vars.use_adaptive_timestep = uat;
                         box._scheduleFade();
                     } catch (e) {
@@ -3025,6 +3083,24 @@ var DICE = (function() {
     };
 
     /**
+     * Destroys the dice box, removing all dice and cleaning up resources.
+     */
+    that.dice_box.prototype.destroy = function() {
+        _clearRollWatchdog(box);
+        this.clear();
+        if (this._resizeObserver) this._resizeObserver.disconnect();
+        if (this._fadeTimeout) clearTimeout(this._fadeTimeout);
+        if (this._fadeRafId) cancelAnimationFrame(this._fadeRafId);
+        this.renderer.dispose();
+        if (this.renderer.domElement.parentNode) {
+            this.renderer.domElement.parentNode.removeChild(this.renderer.domElement);
+        }
+        this.dices = [];
+        this.scene = null;
+        this.world = null;
+    };
+
+    /**
      * Schedules a fade-out of all current dice, then clears them.
      *
      * Cancels any fade already in progress. Called automatically at the end
@@ -3348,6 +3424,10 @@ var DICE = (function() {
         const def = CONFIG_DEFS[name];
         if (!def) throw new Error(`Unknown parameter "${name}"`);
 
+        if (def.nullable && (value === null || value === undefined)) {
+            this._applyParam(name, null);
+            return this;
+        }
         // Validate type and range
         let parsed;
         if (def.type === 'boolean') {
@@ -3524,6 +3604,14 @@ var DICE = (function() {
 
             case 'fade_duration_ms':
                 vars.fade_duration_ms = value;
+                break;
+            
+            case 'roll_timeout_ms':
+                vars.roll_timeout_ms = value;
+                break;
+
+            case 'rng_seed':
+                setRngSeed(value);
                 break;
 
             default:
@@ -3795,6 +3883,36 @@ var DICE = (function() {
             mat.shininess = 40;
         }
         mesh._exploded = true;
+    }
+
+    function apply_critical_highlight(mesh, isFailure) {
+        if (!mesh || !mesh.material) return;
+        if (mesh._criticalHighlighted) return;
+
+        var materials = Array.isArray(mesh.material) ? mesh.material :
+                        (mesh.material.materials ? mesh.material.materials : [mesh.material]);
+        var color = isFailure ? 0x990000 : 0x006622;
+
+        for (var i = 0; i < materials.length; i++) {
+            var mat = materials[i];
+            if (!mat) continue;
+            mat.emissive = new THREE.Color(color);
+            mat.emissiveIntensity = 0.18;
+        }
+        mesh._criticalHighlighted = true;
+    }
+
+    function apply_result_highlights(box, combined) {
+        for (var i = 0; i < combined.length; i++) {
+            var die = combined[i];
+            if (!die.critical && !die.failure) continue;
+            var isFailure = die.failure === true;
+            var subs = die.subResults || [die];
+            for (var j = 0; j < subs.length; j++) {
+                var mesh = box.dices.find(function(d) { return d.dice_id === subs[j].diceId; });
+                if (mesh) apply_critical_highlight(mesh, isFailure);
+            }
+        }
     }
 
     /**
@@ -4808,6 +4926,7 @@ var DICE = (function() {
      * @returns {number}
      */
     function rnd() {
+        if (_rng) return _rng();
         return Math.random();
     }
 
