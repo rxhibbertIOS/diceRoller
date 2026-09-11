@@ -1092,14 +1092,7 @@ var DICE = (function() {
                     ) *
                     dist *
                     2;
-                throw_dices(
-                    box,
-                    vector,
-                    boost,
-                    dist,
-                    before_roll,
-                    after_roll
-                );
+                box.start_throw({ vector, boost }, before_roll, after_roll);
             }
         );
     };
@@ -2092,8 +2085,8 @@ var DICE = (function() {
         // We need to pass the forced results only for the first phase (depth === 0)
         var phaseForced = (depth === 0) ? forcedResults : null;
 
-        // Use box.roll to animate this phase
-        box.roll(vectors, phaseForced, function(rawResults) {
+        // Use box._roll_phase to animate this phase
+        box._roll_phase(vectors, phaseForced, function(rawResults) {
             try{
                 // Combine compound dice
                 var combined = combine_compound_results(rawResults, box.dices);
@@ -2401,9 +2394,9 @@ var DICE = (function() {
             // Use original simple path (for backward compatibility and performance)
             try {
                 var vectors = box.generate_vectors(notation, vector, boost);
-                // If forced results, we need to emulate throw and shift faces
-                // But we can just call box.roll which handles that.
-                box.roll(vectors, request_results || notation.result, function(rawDiceResults) {
+                // If forced results, we need to emulate throw and shift faces.
+                // _roll_phase handles both cases (with and without forced values).
+                box._roll_phase(vectors, request_results || notation.result, function(rawDiceResults) {
                     try {
                         // Now evaluate keep/drop on combined results (no recursion)
                         var combined = combine_compound_results(rawDiceResults, box.dices);
@@ -3084,9 +3077,10 @@ var DICE = (function() {
 
     /**
      * Destroys the dice box, removing all dice and cleaning up resources.
+     * After calling this, the instance is unusable — discard your reference.
      */
     that.dice_box.prototype.destroy = function() {
-        _clearRollWatchdog(box);
+        _clearRollWatchdog(this);
         this.clear();
         if (this._resizeObserver) this._resizeObserver.disconnect();
         if (this._fadeTimeout) clearTimeout(this._fadeTimeout);
@@ -3231,11 +3225,12 @@ var DICE = (function() {
      * @param {number[]} values
      * @param {Function} callback
      */
-    that.dice_box.prototype.roll = function(
+    that.dice_box.prototype._roll_phase = function(
         vectors,
         values,
         callback
     ) {
+        var box = this;
 
         this.prepare_dices_for_roll(
             vectors
@@ -3650,10 +3645,11 @@ var DICE = (function() {
     that.dice_box.prototype.previewRoll = function previewRoll(callback) {
         const notation = '1d4+1d6+1d8+1d10+1d12+1d20+1d100';
         this.setDice(notation);
-        this.start_throw(null, (result) => {
-            if (callback) callback(result);
-        });
+        const promise = this.start_throw();
+        if (callback) promise.then(callback, callback);
+        return promise;
     };
+
 
     // Helper to convert CSS color to number (if needed)
     function colorToNumber(color) {
