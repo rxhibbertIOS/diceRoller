@@ -820,6 +820,18 @@ input[type=color]::-moz-color-swatch{ border:0; border-radius:6px; }
   background:linear-gradient(180deg, rgba(248,113,113,.14), rgba(248,113,113,.05));
   box-shadow:0 0 22px -6px rgba(248,113,113,.7);
 }
+/* Non-critical success / failure — colour only, no glow, no ring */
+.die-chip.is-success{
+  color: var(--good);
+  border-color: rgba(74,222,128,.32);
+  background: linear-gradient(180deg, rgba(74,222,128,.08), rgba(74,222,128,.03));
+}
+.die-chip.is-failure{
+  color: var(--bad);
+  border-color: rgba(248,113,113,.32);
+  background: linear-gradient(180deg, rgba(248,113,113,.08), rgba(248,113,113,.03));
+}
+
 .die-chip.is-crit::after,
 .die-chip.is-fail::after{
   content:"";

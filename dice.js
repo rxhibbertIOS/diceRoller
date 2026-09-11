@@ -2127,6 +2127,7 @@ var DICE = (function() {
                     for (var d = 0; d < groupDice.length; d++) {
                         if (compareValues(groupDice[d].value, csCond, rule.threshold)) {
                             groupDice[d].critical = true;
+                            groupDice[d].success  = true;
                         }
                     }
                     logEvent(audit, phase, 'critical', 'Marked critical successes (' + conditionToString(csCond, rule.threshold) + ').', { rule: type, threshold: rule.threshold, condition: csCond });
@@ -2145,11 +2146,25 @@ var DICE = (function() {
                 if (type === 'target-number') {
                     notation._targetThreshold = rule.threshold;
                     notation._targetCondition = rule.condition || 'greater-equal';
+                    for (var d = 0; d < groupDice.length; d++) {
+                        if (compareValues(groupDice[d].value,
+                                        notation._targetCondition,
+                                        rule.threshold)) {
+                            groupDice[d].success = true;
+                        }
+                    }
                     logEvent(audit, phase, 'target', 'Success count for values ' + conditionToString(notation._targetCondition, rule.threshold) + '.', { rule: type, threshold: rule.threshold, condition: notation._targetCondition });
                 }
                 if (type === 'failures') {
                     notation._failureThreshold = rule.threshold;
                     notation._failureCondition = rule.condition || 'less-than';
+                    for (var d = 0; d < groupDice.length; d++) {
+                        if (compareValues(groupDice[d].value,
+                                        notation._failureCondition,
+                                        rule.threshold)) {
+                            groupDice[d].failure = true;
+                        }
+                    }
                     logEvent(audit, phase, 'failures', 'Failure count for values ' + conditionToString(notation._failureCondition, rule.threshold) + '.', { rule: type, threshold: rule.threshold, condition: notation._failureCondition });
                 }
             }

@@ -861,6 +861,11 @@ Marks matching dice with a green (success) or red (failure) glow. Does not chang
 |`1d20cf<5`|	Mark values under 5 as critical failures|
 |`1d20cf1`|	Same, shorthand for cf<=1|
 
+Dice marked by these rules carry both `critical: true` and the
+appropriate `success` or `failure` flag on their entry in
+`result.diceResults`, so consumers can distinguish a critical hit
+from a critical miss without re-evaluating the threshold.
+
 ### Target Numbers and Failures
 Change the meaning of the final result from "sum of all kept dice" to "count of dice meeting a condition".
 
@@ -870,6 +875,12 @@ Change the meaning of the final result from "sum of all kept dice" to "count of 
 |`6d10t>6`|	Same|
 |`6d10f3`|	Count how many are under 3|
 |`6d10f<=2`|	Same|
+
+Dice meeting the condition are marked `success: true` (for `t`) or
+`failure: true` (for `f`) on their entry in `result.diceResults`,
+independent of whether the roll's numeric result is a success count
+or a failure count. This lets presentation layers highlight which
+individual dice contributed.
 
 ### Combining rules
 Rules chain in written order. This matters — `4d6kh3!` keeps the three highest, then explodes those kept dice. `4d6!kh3` explodes first, then keeps the three highest from the exploded pool.
@@ -1147,7 +1158,7 @@ The Promise from `roll()` resolves with an object containing everything about th
 |`set`|	array|	Flattened list of physical dice types (backward-compatibility)|
 |`constant`|	number|	The flat modifier from the notation, if any|
 |`result`|	number[]|	Final kept die values, in presentation order|
-|`diceResults`|	object[]|	Full per-logical-die objects (including dropped dice)|
+|`diceResults`|	object[]|	One entry per logical die, including dropped dice. See below.|
 |`resultTotal`|	number|	Final numeric result|
 |`resultString`|	string|	Human-readable summary, e.g. "4 3 5 6 = 18"|
 |`audit`|	object[]|	Structured audit trail of every rule application|
@@ -1155,6 +1166,28 @@ The Promise from `roll()` resolves with an object containing everything about th
 |`error`|	boolean|	True if the roll failed|
 |`errorCode`|	string|null|	One of the codes from DICE_ERRORS if failed|
 |`errorMessage`|	string|null|	Human-readable error message|
+
+### Per-die result objects
+
+Each entry in `result.diceResults` describes one logical die — a d100 in
+compound mode is a single entry, not two. The fields are:
+
+| Property | Type | Description |
+|---|---|---|
+| `diceId` | `number` | Unique physical die ID. For compound dice, the ID of the tens die. |
+| `groupId` | `number` | The notation group this die came from. |
+| `type` | `string` | Die type, e.g. `'d20'`, `'d100'`. |
+| `value` | `number` | The die's rolled value. |
+| `kept` | `boolean` | False if a keep/drop rule excluded this die. |
+| `critical` | `boolean` | True if a `cs` or `cf` rule matched this die. |
+| `success` | `boolean` | True if a `cs` or `t` rule marked this die a success. |
+| `failure` | `boolean` | True if a `cf` or `f` rule marked this die a failure. |
+
+`critical` is a **modifier**, not a category — it says "this die's
+success or failure was critical", but does not itself say which. A
+critical success is `{ critical: true, success: true }`; a critical
+failure is `{ critical: true, failure: true }`. Always check the
+success/failure flag before checking `critical`.
 
 ### Audit Trail Format
 Each audit entry has this shape:
@@ -1178,7 +1211,7 @@ box.setDice('2d20kh1cs>19 + 5');
 const result = await box.roll();
 console.log(`Attack: ${result.resultTotal}`);
 
-if (result.diceResults.some(d => d.critical)) {
+if (result.diceResults.some(d => d.critical && d.success)) {
     console.log('Critical hit!');
 }
 ```

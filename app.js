@@ -627,6 +627,7 @@
           value: value,
           dropped: dropped,
           critical: !!pick(d, ['critical', 'isCritical', 'is_critical', 'crit']),
+          success:  !!pick(d, ['success',  'isSuccess',  'is_success']),
           failure: !!pick(d, ['criticalFailure', 'isCriticalFailure', 'is_critical_failure', 'failure', 'isFailure'])
         });
       });
@@ -680,37 +681,36 @@
     var dice      = normaliseDice(result);
     var total     = Number(result.resultTotal);
     var constant  = Number(result.constant) || 0;
-    var kept      = dice.filter(function (d) { return !d.dropped; });
-    var dropped   = dice.filter(function (d) { return d.dropped; });
-    var crits     = dice.filter(function (d) { return d.critical; });
-    var fails     = dice.filter(function (d) { return d.failure; });
+    var kept = dice.filter(function (d) { return !d.dropped; });  
+    var critSucc = kept.filter(function (d) { return d.critical && d.success; });
+    var critFail = kept.filter(function (d) { return d.critical && d.failure; });
+    var plainSucc = kept.filter(function (d) { return d.success && !d.critical; });
+    var plainFail = kept.filter(function (d) { return d.failure && !d.critical; });
 
     el.notation.textContent = lastNotation;
 
-    var hasCrit = crits.length > 0;
-    var hasFail = fails.length > 0;
+    var hasCritSucc = critSucc.length > 0;
+    var hasCritFail = critFail.length > 0;
 
-    el.total.classList.toggle('is-crit', hasCrit && !hasFail);
-    el.total.classList.toggle('is-fail', hasFail && !hasCrit);
-    el.aura.classList.toggle('is-crit', hasCrit && !hasFail);
-    el.aura.classList.toggle('is-fail', hasFail && !hasCrit);
+    el.total.classList.toggle('is-crit', hasCritSucc && !hasCritFail);
+    el.total.classList.toggle('is-fail', hasCritFail && !hasCritSucc);
+    el.aura.classList.toggle('is-crit', hasCritSucc && !hasCritFail);
+    el.aura.classList.toggle('is-fail', hasCritFail && !hasCritSucc);
 
-    el.caption.textContent = result.resultString || '';
-
-    if (hasCrit) {
-      el.badge.hidden = false;
-      el.badge.className = 'hero__badge is-crit';
-      el.badge.textContent = crits.length > 1
-        ? crits.length + ' Critical Successes'
-        : 'Critical Success';
-    } else if (hasFail) {
-      el.badge.hidden = false;
-      el.badge.className = 'hero__badge is-fail';
-      el.badge.textContent = fails.length > 1
-        ? fails.length + ' Critical Failures'
-        : 'Critical Failure';
+    if (hasCritSucc) {
+        el.badge.hidden = false;
+        el.badge.className = 'hero__badge is-crit';
+        el.badge.textContent = critSucc.length > 1
+            ? critSucc.length + ' Critical Successes'
+            : 'Critical Success';
+    } else if (hasCritFail) {
+        el.badge.hidden = false;
+        el.badge.className = 'hero__badge is-fail';
+        el.badge.textContent = critFail.length > 1
+            ? critFail.length + ' Critical Failures'
+            : 'Critical Failure';
     } else {
-      el.badge.hidden = true;
+        el.badge.hidden = true;
     }
 
     if (isFinite(total)) {
@@ -720,10 +720,12 @@
     }
 
     el.dice.innerHTML = dice.map(function (d, i) {
-      var cls = 'die-chip';
-      if (d.dropped) cls += ' is-dropped';
-      else if (d.critical) cls += ' is-crit';
-      else if (d.failure) cls += ' is-fail';
+    var cls = 'die-chip';
+    if (d.dropped)                     cls += ' is-dropped';
+    else if (d.critical && d.failure)  cls += ' is-fail';
+    else if (d.critical && d.success)  cls += ' is-crit';
+    else if (d.failure)                cls += ' is-failure';
+    else if (d.success)                cls += ' is-success';
 
       var delay = reduceMotion ? 0 : Math.min(i * 26, 520);
       var title = d.dropped ? 'Dropped' : (d.critical ? 'Critical' : (d.failure ? 'Failure' : 'Kept'));
@@ -739,8 +741,10 @@
     stats.push({ k: 'Kept', v: kept.length });
     if (dropped.length) stats.push({ k: 'Dropped', v: dropped.length });
     if (constant)      stats.push({ k: 'Modifier', v: (constant > 0 ? '+' : '') + constant, gold: true });
-    if (crits.length)  stats.push({ k: 'Criticals', v: crits.length, good: true });
-    if (fails.length)  stats.push({ k: 'Failures', v: fails.length, bad: true });
+    if (critSucc.length)  stats.push({ k: 'Critical Hits',   v: critSucc.length,  good: true });
+    if (critFail.length)  stats.push({ k: 'Critical Misses', v: critFail.length,  bad:  true });
+    if (plainSucc.length) stats.push({ k: 'Successes',       v: plainSucc.length, good: true });
+    if (plainFail.length) stats.push({ k: 'Failures',        v: plainFail.length, bad:  true });
 
     var phases = countPhases(result);
     if (phases > 1) stats.push({ k: 'Phases', v: phases });
