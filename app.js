@@ -752,8 +752,8 @@
     stats.push({ k: 'Kept', v: kept.length });
     if (dropped.length)   stats.push({ k: 'Dropped',         v: dropped.length });
     if (constant)         stats.push({ k: 'Modifier',        v: (constant > 0 ? '+' : '') + constant, gold: true });
-    if (critSucc.length)  stats.push({ k: 'Critical Hits',   v: critSucc.length,  good: true });
-    if (critFail.length)  stats.push({ k: 'Critical Misses', v: critFail.length,  bad:  true });
+    if (critSucc.length)  stats.push({ k: 'Critical Successes',   v: critSucc.length,  good: true });
+    if (critFail.length)  stats.push({ k: 'Critical Failures', v: critFail.length,  bad:  true });
     if (plainSucc.length) stats.push({ k: 'Successes',       v: plainSucc.length, good: true });
     if (plainFail.length) stats.push({ k: 'Failures',        v: plainFail.length, bad:  true });
 
