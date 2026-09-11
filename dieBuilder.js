@@ -1,4 +1,83 @@
-// die-builder.js - Full Edition with Trigger Button, Flip Help, Validation API, A11y
+// @ts-check
+/**
+ * @fileoverview DieBuilder — a dependency-free, embeddable UI for building
+ * and validating RPG dice notation strings (e.g. `4d6dl1`, `2d20kh1!>15`).
+ *
+ * Two presentation modes:
+ *
+ * 1. **Standalone** — render into a container with {@link DieBuilder#inject}.
+ * 2. **Popup** — attach to an existing `<input>` with
+ *    {@link DieBuilder#attachTo}; a dialog opens on focus or on a floating
+ *    trigger button.
+ *
+ * The builder produces notation strings that are compatible with the DICE.js
+ * roller (`DICE.parse_notation`). It does not roll dice itself.
+ *
+ * @version 1.0.0
+ * @author ...
+ * @license See LICENSE in the repository.
+ */
+
+/**
+ * A single rule attachment on a group.
+ * @typedef {Object} RuleEntry
+ * @property {string} id - Rule identifier; a key of `RULE_DEFS`, or `'none'`.
+ * @property {number} [ruleModifier=1] - Amount for rules that need one
+ *   (keep/drop count, reroll count, target number, failure count).
+ * @property {'='|'>'|'<'} [limitOperator='='] - Comparison operator for rules
+ *   with a trigger condition (explode, reroll, criticals).
+ * @property {number} [limitValue=1] - Trigger value for rules with a condition.
+ */
+
+/**
+ * A single dice group: `N` dice of a given type, zero or more rules, and an
+ * optional flat bonus.
+ * @typedef {Object} Group
+ * @property {string|null} id - Internal id (`'g1'`, `'g2'`, …) or `null`
+ *   before the group has been committed.
+ * @property {number} quantity - Number of dice (1–100).
+ * @property {string} dieType - Die type, e.g. `'d6'`, `'d20'`.
+ * @property {RuleEntry[]} rules - Ordered rule attachments.
+ * @property {number} [bonus=0] - Flat modifier added to the group total.
+ */
+
+/**
+ * A single validation error.
+ * @typedef {Object} ValidationError
+ * @property {string} field - One of: `'quantity'`, `'dieType'`,
+ *   `'ruleModifier'`, `'limitValue'`, `'notation'`, `'custom'`.
+ * @property {string} message - Human-readable description.
+ * @property {string} [groupId] - Group the error belongs to.
+ * @property {number} [groupIndex] - Index of the group.
+ * @property {number} [ruleIndex] - Index of the rule within the group.
+ * @property {string} [ruleId] - Rule identifier.
+ */
+
+/**
+ * Result of {@link DieBuilder#validate} / {@link DieBuilder#validateNotation}.
+ * @typedef {Object} ValidationResult
+ * @property {boolean} valid - `true` if the state is fully valid.
+ * @property {string} notation - Notation the validation was run against.
+ * @property {ValidationError[]} errors - Empty when `valid` is `true`.
+ */
+
+/**
+ * Callback used by several lifecycle hooks.
+ * @callback NotationCallback
+ * @param {string} notation - Current notation string.
+ * @param {Group[]} groups - Current groups array.
+ * @param {*} [data] - Event-specific payload (added group, removed group, …).
+ * @returns {void}
+ */
+
+/**
+ * Custom validator hook. Return `true`/`undefined` for valid, a string for a
+ * custom error message, or `false` for a generic "invalid notation" error.
+ * @callback CustomValidator
+ * @param {string} notation - The notation string.
+ * @param {Group[]} groups - The parsed groups.
+ * @returns {boolean|string|undefined}
+ */
 (function(root, factory) {
   if (typeof define === 'function' && define.amd) {
     define([], factory);
@@ -298,6 +377,50 @@
   // 5. MAIN CLASS
   // ============================================================
   class DieBuilder {
+    /**
+     * Create a new DieBuilder instance. The `config` object is deep-merged over
+     * the built-in `DEFAULTS`, so any subset of keys may be supplied.
+     *
+     * @param {Object} [config={}]
+     * @param {string[]} [config.dieTypes] - Die types shown in the picker.
+     * @param {Object} [config.theme]
+     * @param {'light'|'dark'} [config.theme.mode='light']
+     * @param {Partial<typeof LIGHT_PALETTE>} [config.theme.colors={}]
+     *   Palette overrides — see the Theming section of the README.
+     * @param {Partial<typeof DEFAULTS.labels>} [config.labels]
+     * @param {Object} [config.callbacks]
+     * @param {NotationCallback} [config.callbacks.onChange]
+     * @param {NotationCallback} [config.callbacks.onGroupAdd]
+     * @param {NotationCallback} [config.callbacks.onGroupRemove]
+     * @param {NotationCallback} [config.callbacks.onClear]
+     * @param {(notation: string, groups: Group[]) => void} [config.callbacks.onAccept]
+     *   Fired when the popup is accepted with valid state.
+     * @param {() => void} [config.callbacks.onClose]
+     * @param {(err: Error) => void} [config.callbacks.onError]
+     * @param {(result: ValidationResult) => void} [config.callbacks.onValidate]
+     * @param {Object} [config.features]
+     * @param {boolean} [config.features.allowManual=true]
+     * @param {boolean} [config.features.showPreview=true]
+     * @param {boolean} [config.features.showHelp=true]
+     * @param {boolean} [config.features.autoValidate=true]
+     * @param {boolean} [config.features.showCategories=true]
+     * @param {Object} [config.popup]
+     * @param {boolean} [config.popup.enabled=false]
+     * @param {string|HTMLElement} [config.popup.targetInput=null]
+     * @param {'focus'|'button'|'both'} [config.popup.trigger='focus']
+     * @param {string} [config.popup.triggerIcon] - Inline SVG for the trigger.
+     * @param {string} [config.popup.width='80vw']
+     * @param {string} [config.popup.maxHeight='80vh']
+     * @param {boolean} [config.popup.closeOnOutsideClick=true]
+     * @param {boolean} [config.popup.closeOnEscape=true]
+     * @param {CustomValidator} [config.validator=null]
+     *
+     * @example
+     * const builder = new DieBuilder({
+     *   theme: { mode: 'dark' },
+     *   callbacks: { onChange: (n, gs) => console.log(n, gs) }
+     * });
+     */
     constructor(config = {}) {
       this.config = deepMerge(DEFAULTS, config);
       this.container = null;
@@ -339,6 +462,16 @@
     // ============================================================
     // 5a. CONFIGURATION API
     // ============================================================
+    /**
+     * Merge a partial config into the live instance and re-render.
+     * Safe to call at any time; preserves current groups and notation.
+     *
+     * @param {Object} config - Any subset of the constructor config.
+     * @returns {this}
+     *
+     * @example
+     * builder.setConfig({ theme: { mode: 'dark' } });
+     */
     setConfig(config) {
       this.config = deepMerge(this.config, config);
       if (this.container) {
@@ -362,6 +495,13 @@
     // ============================================================
     // 5b. INIT / ATTACH
     // ============================================================
+    /**
+     * Convenience wrapper for {@link DieBuilder#inject}, with a config override.
+     *
+     * @param {string|HTMLElement} element - Container selector or element.
+     * @param {Object} [options={}] - Config overrides for this instance.
+     * @returns {this}
+     */
     init(element, options = {}) {
       if (Object.keys(options).length > 0) this.config = deepMerge(this.config, options);
       return this.inject(element);
