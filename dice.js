@@ -171,37 +171,23 @@ var DICE = (function() {
      * @param {Object} [originalNotation] - The parsed notation (if available) to preserve groups.
      */
     function _handleDiceError(box, error, afterRollCb, originalNotation) {
-        // Clear any dice left in the scene
         try { box.clear(); } catch (e) { /* ignore */ }
         box.rolling = false;
         _clearRollWatchdog(box);
-        // Build an error notation
+
         var err = createDiceError(
             error.code || 'UNKNOWN_ERROR',
             error.userMessage || error.message,
             error
         );
-        var notation = {
-            error: true,
-            errorCode: err.code,
-            errorMessage: err.userMessage,
-            errorStack: err.stack,
-            groups: originalNotation ? originalNotation.groups : [],
-            set: originalNotation ? originalNotation.set : [],
-            constant: originalNotation ? originalNotation.constant : 0,
-            result: [],
-            diceResults: [],
-            resultTotal: 0,
-            resultString: 'Error: ' + err.userMessage,
-            audit: [],
-            auditString: ''
-        };
+        var notation = _buildErrorNotation(err, originalNotation);
+
         if (afterRollCb) {
             afterRollCb(notation);
         } else {
             console.error('Dice Roll: Unhandled error – no after_roll callback.', err);
         }
-    }
+}   
 
     /**
      * Converts an operator string (>, >=, <, <=, =) to a canonical condition
@@ -693,6 +679,248 @@ var DICE = (function() {
             rng_seed:        () => rngSeed,
         };
         return map[name] ? map[name]() : undefined;
+    }
+
+    // ---------------------------------------------------------------------
+    // STATIC METHODS
+    // ---------------------------------------------------------------------
+    /**
+     * Rolls the dice without any physics simulation or rendering.
+     *
+     * This is the headless entry point to the rule engine. It never creates
+     * a dice_box, Three.js mesh, or Cannon body, and it never touches the
+     * DOM. Values are drawn directly from the RNG and passed through the
+     * same rule evaluation as a rendered roll, so the audit trail and result
+     * shape are identical.
+     *
+     * Ideal for batch simulation, server-side rolls, hidden DM checks, or
+     * automated tests. Because there is no physics, results depend only on
+     * the RNG — not on how the dice would have landed.
+     *
+     * Forced results (returning an array from before_roll) are ignored —
+     * there are no physical dice to shift.
+     *
+     * @param {string} notation - Dice notation, e.g. '4d6dl1 + 5'.
+     * @param {Function} [before_roll] - Optional callback, called with the
+     *        parsed notation before values are generated. Its return value
+     *        is ignored.
+     * @param {Function} [after_roll] - Optional callback, called with the
+     *        result object. The Promise also resolves with it.
+     * @returns {Promise<Object>} Resolves with the result notation object,
+     *          or rejects with an error-shaped notation on failure.
+     */
+    that.rollSilent = function(notationString, before_roll, after_roll) {
+        if (typeof before_roll === 'function' && after_roll === undefined) {
+            after_roll = before_roll;
+            before_roll = null;
+        }
+
+        return new Promise(function(resolve, reject) {
+            var notation = that.parse_notation(notationString);
+
+            if (notation.error || notation.set.length === 0) {
+                if (!notation.error) {
+                    notation.error = true;
+                    notation.errorCode = 'NO_DICE';
+                    notation.errorMessage = DICE_ERRORS.NO_DICE;
+                }
+                if (after_roll) { try { after_roll(notation); } catch (e) {} }
+                reject(notation);
+                return;
+            }
+
+            if (before_roll) {
+                try {
+                    before_roll(notation);
+                } catch (e) {
+                    var err = createDiceError('CALLBACK_ERROR', 'Error in before_roll callback', e);
+                    var errNotation = _buildErrorNotation(err, notation);
+                    if (after_roll) { try { after_roll(errNotation); } catch (e2) {} }
+                    reject(errNotation);
+                    return;
+                }
+            }
+
+            var audit = [];
+            var keptAccum = [];
+            var dieIdCounter = 0;
+            var maxRecursion = vars.max_recursion_depth;
+            var maxDice = vars.max_dice_per_roll;
+
+            function rollLogicalValue(type) {
+                if (type === 'd100') return Math.floor(rnd() * 100) + 1;
+                var max = die_max_value(type);
+                return Math.floor(rnd() * max) + 1;
+            }
+
+            function processPhase(phaseNotation, phase) {
+                if (phase > maxRecursion) {
+                    throw createDiceError('RECURSION_DEPTH_EXCEEDED', 'Max recursion depth reached.');
+                }
+
+                var combined = [];
+                for (var gi = 0; gi < phaseNotation.groups.length; gi++) {
+                    var group = phaseNotation.groups[gi];
+                    for (var d = 0; d < group.count; d++) {
+                        combined.push({
+                            diceId: dieIdCounter++,
+                            groupId: group.id,
+                            type: group.type,
+                            value: rollLogicalValue(group.type),
+                            kept: true,
+                            subResults: []
+                        });
+                    }
+                }
+
+                if (keptAccum.length + combined.length > maxDice) {
+                    throw createDiceError('TOO_MANY_DICE', 'Exceeded safety limit of ' + maxDice + ' dice.');
+                }
+
+                var vals = combined.map(function(d) { return d.value; }).join(', ');
+                logEvent(audit, phase, 'roll', 'Rolled ' + combined.length + ' dice: ' + vals + '.',
+                    { dice: combined.map(function(d) { return { id: d.diceId, value: d.value }; }) });
+
+                apply_static_rules(phaseNotation, combined, audit, phase);
+
+                var explodedDice = [];
+                var rerolledDice = [];
+
+                for (var i = 0; i < combined.length; i++) {
+                    var die = combined[i];
+                    if (!die.kept) continue;
+
+                    var groupDef = findGroupById(phaseNotation, die.groupId);
+                    if (!groupDef) continue;
+
+                    for (var ri = 0; ri < groupDef.rules.length; ri++) {
+                        var rule = groupDef.rules[ri];
+
+                        if (rule.type === 'explode' || rule.type === 'explode-compounding') {
+                            var maxFace = die_max_value(die.type);
+                            var shouldExplode = (rule.threshold === 'max')
+                                ? die.value === maxFace
+                                : compareValues(die.value, rule.condition || 'greater-than', rule.threshold);
+                            if (shouldExplode) {
+                                explodedDice.push(die);
+                                logEvent(audit, phase, 'explode',
+                                    'Die #' + die.diceId + ' (value ' + die.value + ') exploded.',
+                                    { diceId: die.diceId, value: die.value, rule: rule.type });
+                            }
+                        }
+
+                        if (rule.type === 'reroll') {
+                            if (compareValues(die.value, rule.condition || 'less-than', rule.threshold)) {
+                                die.kept = false;
+                                rerolledDice.push(die);
+                                logEvent(audit, phase, 'reroll',
+                                    'Die #' + die.diceId + ' (value ' + die.value + ') will be rerolled.',
+                                    { diceId: die.diceId, value: die.value, rule: rule.type });
+                            }
+                        }
+                    }
+                }
+
+                for (var k = 0; k < combined.length; k++) {
+                    if (combined[k].kept) keptAccum.push(combined[k]);
+                }
+
+                var nextNotation = build_next_notation(explodedDice, rerolledDice, phaseNotation);
+                if (nextNotation && nextNotation.groups.length > 0) {
+                    processPhase(nextNotation, phase + 1);
+                }
+            }
+
+            try {
+                processPhase(notation, 0);
+            } catch (e) {
+                var err = createDiceError('UNKNOWN_ERROR', null, e);
+                var errNotation = _buildErrorNotation(err, notation);
+                if (after_roll) { try { after_roll(errNotation); } catch (e2) {} }
+                reject(errNotation);
+                return;
+            }
+
+            var targetThreshold = notation._targetThreshold;
+            var failureThreshold = notation._failureThreshold;
+            var finalValue;
+
+            if (targetThreshold !== undefined) {
+                var targetOp = notation._targetCondition || 'greater-equal';
+                finalValue = 0;
+                for (var i = 0; i < keptAccum.length; i++) {
+                    if (compareValues(keptAccum[i].value, targetOp, targetThreshold)) finalValue++;
+                }
+            } else if (failureThreshold !== undefined) {
+                var failOp = notation._failureCondition || 'less-than';
+                finalValue = 0;
+                for (var i = 0; i < keptAccum.length; i++) {
+                    if (compareValues(keptAccum[i].value, failOp, failureThreshold)) finalValue++;
+                }
+            } else {
+                finalValue = notation.constant || 0;
+                for (var i = 0; i < keptAccum.length; i++) finalValue += keptAccum[i].value;
+            }
+
+            keptAccum = sortKeptDice(keptAccum, notation);
+
+            var values = keptAccum.map(function(d) { return d.value; });
+            var resultString = values.join(' ');
+            if (notation.constant) {
+                if (notation.constant > 0) resultString += ' +' + notation.constant;
+                else resultString += ' -' + Math.abs(notation.constant);
+            }
+            if (values.length > 1 || notation.constant) {
+                resultString += ' = ' + finalValue;
+            }
+
+            var result = {
+                groups: notation.groups,
+                set: notation.set,
+                constant: notation.constant || 0,
+                result: keptAccum.map(function(d) { return d.value; }),
+                diceResults: keptAccum,
+                resultTotal: finalValue,
+                resultString: resultString,
+                audit: audit,
+                auditString: that.formatAudit(audit),
+                error: false,
+                silent: true
+            };
+
+            if (after_roll) { try { after_roll(result); } catch (e) {} }
+            resolve(result);
+        });
+    };
+
+    /**
+     * Builds the error-shaped result object that is delivered to callers
+     * when a roll fails.
+     *
+     * Shared by _handleDiceError and the static rollSilent path so the two
+     * produce identical shapes. Callers can rely on the same fields being
+     * present whether the roll failed while rendering or while silent.
+     *
+     * @param {Error} error - The structured error from createDiceError.
+     * @param {Object} [originalNotation] - The parsed notation, if available.
+     * @returns {Object} An error-shaped notation object.
+     */
+    function _buildErrorNotation(error, originalNotation) {
+        return {
+            error: true,
+            errorCode: error.code || 'UNKNOWN_ERROR',
+            errorMessage: error.userMessage || error.message,
+            errorStack: error.stack,
+            groups: originalNotation ? originalNotation.groups : [],
+            set: originalNotation ? originalNotation.set : [],
+            constant: originalNotation ? originalNotation.constant : 0,
+            result: [],
+            diceResults: [],
+            resultTotal: 0,
+            resultString: 'Error: ' + (error.userMessage || error.message),
+            audit: [],
+            auditString: ''
+        };
     }
 
     // ---------------------------------------------------------------------
@@ -1188,209 +1416,24 @@ var DICE = (function() {
     };
 
     /**
-     * Rolls the dice without any physics simulation or rendering.
+     * Rolls the dice silently using this box's current notation.
      *
-     * Returns the same result object shape as roll(), but never creates
-     * Three.js meshes, Cannon bodies, or triggers a render. The values are
-     * generated directly from the RNG and passed through the same rule
-     * engine as a rendered roll, so the audit trail and rule evaluation are
-     * identical.
-     *
-     * Forced results (returning an array from before_roll) are ignored in
-     * silent mode — there is no physical die to shift, and the values have
-     * already been chosen.
+     * Convenience wrapper around DICE.rollSilent. Does not touch the
+     * rendered scene, does not interact with the roll watchdog, and does
+     * not conflict with a rendered roll in progress on the same box.
      *
      * @param {Function} [before_roll] - Optional callback, called with the
-     *        parsed notation before values are generated. Its return value
-     *        is ignored.
+     *        parsed notation. Its return value is ignored.
      * @param {Function} [after_roll] - Optional callback, called with the
-     *        result object. The Promise also resolves with it.
-     * @returns {Promise<Object>} Resolves with the result notation object,
-     *          or rejects with an error-shaped notation on failure.
+     *        result object.
+     * @returns {Promise<Object>} Resolves with the result notation object.
      */
     that.dice_box.prototype.rollSilent = function(before_roll, after_roll) {
         if (typeof before_roll === 'function' && after_roll === undefined) {
             after_roll = before_roll;
             before_roll = null;
         }
-        var box = this;
-
-        return new Promise(function(resolve, reject) {
-            var notation = that.parse_notation(box.diceToRoll);
-            box._originalNotation = notation;
-
-            if (notation.error || notation.set.length === 0) {
-                if (!notation.error) {
-                    notation.error = true;
-                    notation.errorCode = 'NO_DICE';
-                    notation.errorMessage = DICE_ERRORS.NO_DICE;
-                }
-                if (after_roll) { try { after_roll(notation); } catch (e) {} }
-                reject(notation);
-                return;
-            }
-
-            if (before_roll) {
-                try { before_roll(notation); } catch (e) {
-                    var err = createDiceError('CALLBACK_ERROR', 'Error in before_roll callback', e);
-                    _handleDiceError(box, err, after_roll, notation);
-                    reject(err);
-                    return;
-                }
-            }
-
-            var audit = [];
-            var keptAccum = [];
-            var dieIdCounter = 0;
-            var maxRecursion = vars.max_recursion_depth;
-            var maxDice = vars.max_dice_per_roll;
-
-            function rollLogicalValue(type) {
-                if (type === 'd100') return Math.floor(rnd() * 100) + 1;
-                var max = die_max_value(type);
-                return Math.floor(rnd() * max) + 1;
-            }
-
-            function processPhase(phaseNotation, phase) {
-                if (phase > maxRecursion) {
-                    throw createDiceError('RECURSION_DEPTH_EXCEEDED', 'Max recursion depth reached.');
-                }
-
-                var combined = [];
-                for (var gi = 0; gi < phaseNotation.groups.length; gi++) {
-                    var group = phaseNotation.groups[gi];
-                    for (var d = 0; d < group.count; d++) {
-                        combined.push({
-                            diceId: dieIdCounter++,
-                            groupId: group.id,
-                            type: group.type,
-                            value: rollLogicalValue(group.type),
-                            kept: true,
-                            subResults: []
-                        });
-                    }
-                }
-
-                if (keptAccum.length + combined.length > maxDice) {
-                    throw createDiceError('TOO_MANY_DICE', 'Exceeded safety limit of ' + maxDice + ' dice.');
-                }
-
-                var vals = combined.map(function(d) { return d.value; }).join(', ');
-                logEvent(audit, phase, 'roll', 'Rolled ' + combined.length + ' dice: ' + vals + '.',
-                    { dice: combined.map(function(d) { return { id: d.diceId, value: d.value }; }) });
-
-                apply_static_rules(phaseNotation, combined, audit, phase);
-
-                var explodedDice = [];
-                var rerolledDice = [];
-
-                for (var i = 0; i < combined.length; i++) {
-                    var die = combined[i];
-                    if (!die.kept) continue;
-
-                    var groupDef = findGroupById(phaseNotation, die.groupId);
-                    if (!groupDef) continue;
-
-                    for (var ri = 0; ri < groupDef.rules.length; ri++) {
-                        var rule = groupDef.rules[ri];
-
-                        if (rule.type === 'explode' || rule.type === 'explode-compounding') {
-                            var maxFace = die_max_value(die.type);
-                            var shouldExplode = (rule.threshold === 'max')
-                                ? die.value === maxFace
-                                : compareValues(die.value, rule.condition || 'greater-than', rule.threshold);
-                            if (shouldExplode) {
-                                explodedDice.push(die);
-                                logEvent(audit, phase, 'explode',
-                                    'Die #' + die.diceId + ' (value ' + die.value + ') exploded.',
-                                    { diceId: die.diceId, value: die.value, rule: rule.type });
-                            }
-                        }
-
-                        if (rule.type === 'reroll') {
-                            if (compareValues(die.value, rule.condition || 'less-than', rule.threshold)) {
-                                die.kept = false;
-                                rerolledDice.push(die);
-                                logEvent(audit, phase, 'reroll',
-                                    'Die #' + die.diceId + ' (value ' + die.value + ') will be rerolled.',
-                                    { diceId: die.diceId, value: die.value, rule: rule.type });
-                            }
-                        }
-                    }
-                }
-
-                for (var k = 0; k < combined.length; k++) {
-                    if (combined[k].kept) keptAccum.push(combined[k]);
-                }
-
-                var nextNotation = build_next_notation(explodedDice, rerolledDice, phaseNotation);
-                if (nextNotation && nextNotation.groups.length > 0) {
-                    processPhase(nextNotation, phase + 1);
-                }
-            }
-
-            try {
-                processPhase(notation, 0);
-            } catch (e) {
-                var err = createDiceError('UNKNOWN_ERROR', null, e);
-                _handleDiceError(box, err, after_roll, notation);
-                reject(err);
-                return;
-            }
-
-            // Determine result mode
-            var targetThreshold = notation._targetThreshold;
-            var failureThreshold = notation._failureThreshold;
-            var finalValue;
-
-            if (targetThreshold !== undefined) {
-                var targetOp = notation._targetCondition || 'greater-equal';
-                finalValue = 0;
-                for (var i = 0; i < keptAccum.length; i++) {
-                    if (compareValues(keptAccum[i].value, targetOp, targetThreshold)) finalValue++;
-                }
-            } else if (failureThreshold !== undefined) {
-                var failOp = notation._failureCondition || 'less-than';
-                finalValue = 0;
-                for (var i = 0; i < keptAccum.length; i++) {
-                    if (compareValues(keptAccum[i].value, failOp, failureThreshold)) finalValue++;
-                }
-            } else {
-                finalValue = notation.constant || 0;
-                for (var i = 0; i < keptAccum.length; i++) finalValue += keptAccum[i].value;
-            }
-
-            if (box._originalNotation) {
-                keptAccum = sortKeptDice(keptAccum, box._originalNotation);
-            }
-
-            var values = keptAccum.map(function(d) { return d.value; });
-            var resultString = values.join(' ');
-            if (notation.constant) {
-                if (notation.constant > 0) resultString += ' +' + notation.constant;
-                else resultString += ' -' + Math.abs(notation.constant);
-            }
-            if (values.length > 1 || notation.constant) {
-                resultString += ' = ' + finalValue;
-            }
-
-            var result = {
-                groups: notation.groups,
-                set: notation.set,
-                constant: notation.constant || 0,
-                result: keptAccum.map(function(d) { return d.value; }),
-                diceResults: keptAccum,
-                resultTotal: finalValue,
-                resultString: resultString,
-                audit: audit,
-                auditString: that.formatAudit(audit),
-                error: false,
-                silent: true
-            };
-
-            if (after_roll) { try { after_roll(result); } catch (e) {} }
-            resolve(result);
-        });
+        return that.rollSilent(this.diceToRoll, before_roll, after_roll);
     };
 
     /**
@@ -6657,6 +6700,8 @@ var DICE = (function() {
         dice.geometry =
             geom;
     }
+
+
 
     return that;
 
