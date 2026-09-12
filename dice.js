@@ -1164,6 +1164,11 @@ var DICE = (function() {
             options = {};
         }
         const opts = options || {};
+
+        if (opts.silent) {
+            return this.rollSilent(before_roll, after_roll);
+        }
+
         const minBoost = opts.minBoost !== undefined ? opts.minBoost : 2.0;
         const maxBoost = opts.maxBoost !== undefined ? opts.maxBoost : 5.0;
         const angle = opts.angle;
@@ -1180,6 +1185,212 @@ var DICE = (function() {
         const boost = boostFactor * dist;
 
         return this.start_throw({ vector, boost }, before_roll, after_roll);
+    };
+
+    /**
+     * Rolls the dice without any physics simulation or rendering.
+     *
+     * Returns the same result object shape as roll(), but never creates
+     * Three.js meshes, Cannon bodies, or triggers a render. The values are
+     * generated directly from the RNG and passed through the same rule
+     * engine as a rendered roll, so the audit trail and rule evaluation are
+     * identical.
+     *
+     * Forced results (returning an array from before_roll) are ignored in
+     * silent mode — there is no physical die to shift, and the values have
+     * already been chosen.
+     *
+     * @param {Function} [before_roll] - Optional callback, called with the
+     *        parsed notation before values are generated. Its return value
+     *        is ignored.
+     * @param {Function} [after_roll] - Optional callback, called with the
+     *        result object. The Promise also resolves with it.
+     * @returns {Promise<Object>} Resolves with the result notation object,
+     *          or rejects with an error-shaped notation on failure.
+     */
+    that.dice_box.prototype.rollSilent = function(before_roll, after_roll) {
+        if (typeof before_roll === 'function' && after_roll === undefined) {
+            after_roll = before_roll;
+            before_roll = null;
+        }
+        var box = this;
+
+        return new Promise(function(resolve, reject) {
+            var notation = that.parse_notation(box.diceToRoll);
+            box._originalNotation = notation;
+
+            if (notation.error || notation.set.length === 0) {
+                if (!notation.error) {
+                    notation.error = true;
+                    notation.errorCode = 'NO_DICE';
+                    notation.errorMessage = DICE_ERRORS.NO_DICE;
+                }
+                if (after_roll) { try { after_roll(notation); } catch (e) {} }
+                reject(notation);
+                return;
+            }
+
+            if (before_roll) {
+                try { before_roll(notation); } catch (e) {
+                    var err = createDiceError('CALLBACK_ERROR', 'Error in before_roll callback', e);
+                    _handleDiceError(box, err, after_roll, notation);
+                    reject(err);
+                    return;
+                }
+            }
+
+            var audit = [];
+            var keptAccum = [];
+            var dieIdCounter = 0;
+            var maxRecursion = vars.max_recursion_depth;
+            var maxDice = vars.max_dice_per_roll;
+
+            function rollLogicalValue(type) {
+                if (type === 'd100') return Math.floor(rnd() * 100) + 1;
+                var max = die_max_value(type);
+                return Math.floor(rnd() * max) + 1;
+            }
+
+            function processPhase(phaseNotation, phase) {
+                if (phase > maxRecursion) {
+                    throw createDiceError('RECURSION_DEPTH_EXCEEDED', 'Max recursion depth reached.');
+                }
+
+                var combined = [];
+                for (var gi = 0; gi < phaseNotation.groups.length; gi++) {
+                    var group = phaseNotation.groups[gi];
+                    for (var d = 0; d < group.count; d++) {
+                        combined.push({
+                            diceId: dieIdCounter++,
+                            groupId: group.id,
+                            type: group.type,
+                            value: rollLogicalValue(group.type),
+                            kept: true,
+                            subResults: []
+                        });
+                    }
+                }
+
+                if (keptAccum.length + combined.length > maxDice) {
+                    throw createDiceError('TOO_MANY_DICE', 'Exceeded safety limit of ' + maxDice + ' dice.');
+                }
+
+                var vals = combined.map(function(d) { return d.value; }).join(', ');
+                logEvent(audit, phase, 'roll', 'Rolled ' + combined.length + ' dice: ' + vals + '.',
+                    { dice: combined.map(function(d) { return { id: d.diceId, value: d.value }; }) });
+
+                apply_static_rules(phaseNotation, combined, audit, phase);
+
+                var explodedDice = [];
+                var rerolledDice = [];
+
+                for (var i = 0; i < combined.length; i++) {
+                    var die = combined[i];
+                    if (!die.kept) continue;
+
+                    var groupDef = findGroupById(phaseNotation, die.groupId);
+                    if (!groupDef) continue;
+
+                    for (var ri = 0; ri < groupDef.rules.length; ri++) {
+                        var rule = groupDef.rules[ri];
+
+                        if (rule.type === 'explode' || rule.type === 'explode-compounding') {
+                            var maxFace = die_max_value(die.type);
+                            var shouldExplode = (rule.threshold === 'max')
+                                ? die.value === maxFace
+                                : compareValues(die.value, rule.condition || 'greater-than', rule.threshold);
+                            if (shouldExplode) {
+                                explodedDice.push(die);
+                                logEvent(audit, phase, 'explode',
+                                    'Die #' + die.diceId + ' (value ' + die.value + ') exploded.',
+                                    { diceId: die.diceId, value: die.value, rule: rule.type });
+                            }
+                        }
+
+                        if (rule.type === 'reroll') {
+                            if (compareValues(die.value, rule.condition || 'less-than', rule.threshold)) {
+                                die.kept = false;
+                                rerolledDice.push(die);
+                                logEvent(audit, phase, 'reroll',
+                                    'Die #' + die.diceId + ' (value ' + die.value + ') will be rerolled.',
+                                    { diceId: die.diceId, value: die.value, rule: rule.type });
+                            }
+                        }
+                    }
+                }
+
+                for (var k = 0; k < combined.length; k++) {
+                    if (combined[k].kept) keptAccum.push(combined[k]);
+                }
+
+                var nextNotation = build_next_notation(explodedDice, rerolledDice, phaseNotation);
+                if (nextNotation && nextNotation.groups.length > 0) {
+                    processPhase(nextNotation, phase + 1);
+                }
+            }
+
+            try {
+                processPhase(notation, 0);
+            } catch (e) {
+                var err = createDiceError('UNKNOWN_ERROR', null, e);
+                _handleDiceError(box, err, after_roll, notation);
+                reject(err);
+                return;
+            }
+
+            // Determine result mode
+            var targetThreshold = notation._targetThreshold;
+            var failureThreshold = notation._failureThreshold;
+            var finalValue;
+
+            if (targetThreshold !== undefined) {
+                var targetOp = notation._targetCondition || 'greater-equal';
+                finalValue = 0;
+                for (var i = 0; i < keptAccum.length; i++) {
+                    if (compareValues(keptAccum[i].value, targetOp, targetThreshold)) finalValue++;
+                }
+            } else if (failureThreshold !== undefined) {
+                var failOp = notation._failureCondition || 'less-than';
+                finalValue = 0;
+                for (var i = 0; i < keptAccum.length; i++) {
+                    if (compareValues(keptAccum[i].value, failOp, failureThreshold)) finalValue++;
+                }
+            } else {
+                finalValue = notation.constant || 0;
+                for (var i = 0; i < keptAccum.length; i++) finalValue += keptAccum[i].value;
+            }
+
+            if (box._originalNotation) {
+                keptAccum = sortKeptDice(keptAccum, box._originalNotation);
+            }
+
+            var values = keptAccum.map(function(d) { return d.value; });
+            var resultString = values.join(' ');
+            if (notation.constant) {
+                if (notation.constant > 0) resultString += ' +' + notation.constant;
+                else resultString += ' -' + Math.abs(notation.constant);
+            }
+            if (values.length > 1 || notation.constant) {
+                resultString += ' = ' + finalValue;
+            }
+
+            var result = {
+                groups: notation.groups,
+                set: notation.set,
+                constant: notation.constant || 0,
+                result: keptAccum.map(function(d) { return d.value; }),
+                diceResults: keptAccum,
+                resultTotal: finalValue,
+                resultString: resultString,
+                audit: audit,
+                auditString: that.formatAudit(audit),
+                error: false,
+                silent: true
+            };
+
+            if (after_roll) { try { after_roll(result); } catch (e) {} }
+            resolve(result);
+        });
     };
 
     /**
