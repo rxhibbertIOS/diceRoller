@@ -52,6 +52,7 @@ builder.setConfig({
     - [Result object reference](#result-object-reference)
     - [Examples](#examples)
     - [Advanced topics](#advanced-topics)
+    - [Silent Rolls](#silent-rolls)
     - [Browser support and mobile notes](#browser-support-and-mobile-notes)
 
 - [Shared notation reference](#shared-notation-reference)
@@ -736,6 +737,7 @@ Roll `1d20`, `4d6dl1`, `2d6!>4`, `2d20kh1!`, and dozens of other forms. Watch th
 - **Configurable fade-out** — dice disappear after a delay you control, or stay forever.
 - **Per-rule highlights** — exploding dice glow orange, critical successes green, failures red.
 - **Zero required setup** — no build step, no external audio, no tracking.
+- **Silent rolls** — get a result without running the physics simulation or rendering anything, for batch processing or hidden rolls.
 
 ---
 
@@ -928,6 +930,7 @@ Rolls the dice. Returns a Promise that resolves with the result object, or rejec
 
 ### Parameters
  - `options` (Object, optional)
+    - `silent` *(boolean, default false)* — skip all rendering and physics and return a logical result immediately. See [Silent rolls](#silent-rolls).
     - `minBoost` (number, default 2.0) — minimum throw strength multiplier.
     - `maxBoost` (number, default 5.0) — maximum throw strength multiplier.
     - `angle` (number, optional) — throw direction in radians. 0 throws right, Math.PI / 2 throws up. Random if omitted.
@@ -1349,6 +1352,75 @@ The library was designed for one tray per page. If you create multiple `dice_box
 The geometry cache is shared; the first box to build a d20 geometry at a given scale fixes it for all boxes until the scale changes.
 
 Single-tray applications are unaffected.
+
+## Silent rolls
+
+Sometimes you need a result without the visual — a quick NPC roll, a batch of simulations, a server-side check, a "roll behind the screen" the DM shouldn't see yet. `roll()` accepts a `silent` option for exactly this.
+
+```js
+const result = await box.roll({ silent: true });
+console.log(result.resultTotal);
+```
+
+A silent roll:
+
+- **Does not create any Three.js meshes, materials, or Cannon rigid bodies.** Nothing is added to the scene, and no render is triggered.
+- **Does not animate.** The Promise resolves immediately, not after a physics simulation.
+- **Does not touch the tray.** Any dice currently on screen stay exactly as they are. The fade scheduler and roll watchdog are not engaged.
+- **Runs through the same rule engine.** Keep/drop, explode, reroll, sort, crit, target numbers, constants — everything works. The audit trail is produced identically.
+- **Uses the same seeded RNG.** If you've set `rng_seed`, silent rolls are just as reproducible as rendered ones.
+
+The result object has the same shape as a normal roll, plus a `silent: true` flag so callers can distinguish the two.
+
+#### When to use silent mode
+
+- **Batch simulation** — rolling 10,000 attacks to check a homebrew rule.
+- **Hidden rolls** — the DM rolls a perception check the player shouldn't see.
+- **Automated tests** — verify rule evaluation without waiting for physics.
+- **Rapid API calls** — a server-side dice service handling many requests.
+
+#### When not to
+
+- **Interactive play** — the tumbling dice are the point. Use `roll()` normally.
+- **Demonstrating a notation** — a silent roll gives no visual feedback that it happened.
+
+#### Caveats
+
+**Seeded reproducibility does not cross modes.** A silent roll with seed 42 will not produce the same result as a rendered roll with seed 42. Rendered rolls derive values from physics settling; silent rolls generate values directly from the RNG. They are independent streams. Pick one mode for your tests and stick to it.
+
+**Forced results are ignored.** The `before_roll` callback still fires if you supply one, but its return value is discarded — silent rolls have no physical dice to shift, so there is nothing to force. Use `rng_seed` if you need to replay a specific silent result.
+
+**d100 is rolled as a single 1-100 value.** Compound d100 exists only to make the physical tray look right — it splits the percentile roll across a tens die and a units die. Silent mode skips that and returns a single value, which is what you want.
+
+#### Batch example
+
+```js
+box.setParam('rng_seed', 42);
+box.setDice('20d6!');
+
+const trials = await Promise.all([
+    box.roll({ silent: true }),
+    box.roll({ silent: true }),
+    box.roll({ silent: true })
+]);
+
+trials.forEach(t => console.log(t.resultTotal));
+```
+
+Every call returns a fresh result. The RNG advances with each roll, so the three trials give different values — but re-running the whole block with the same seed produces the same three values again.
+
+#### Mixing silent and rendered rolls
+
+A silent roll does not block a rendered roll, and vice versa. You can start a rendered roll and, while it is still tumbling, run a silent roll in the background:
+
+```js
+const visual = box.roll();                          // dice tumble on screen
+const hidden = box.roll({ silent: true });          // resolves immediately
+console.log((await hidden).resultTotal);
+console.log((await visual).resultTotal);
+```
+
+The silent result arrives first. The visual roll continues as normal and eventually resolves with its own result.
 
 ## Browser Support and Mobile Notes
 WebGL is required. The library falls back to THREE.CanvasRenderer if WebGL isn't available, but visual quality is dramatically reduced.
