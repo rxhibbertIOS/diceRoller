@@ -445,6 +445,7 @@
       this._suppressFocus = false;
       this._focusTrapHandler = null;
       this._faceResizeObserver = null;
+      this._inputVisibilityObserver = null;
       this._triggerScrollHandler = null;
       this._triggerResizeHandler = null;
       this._originalPaddingRight = null;
@@ -650,6 +651,37 @@
 
       // Explicit trigger button
       if (useButton) this._createTriggerButton();
+
+      // Hide the trigger and dismiss the popup when the input is hidden
+      // by an ancestor (accordion collapse, tab switch, etc.). IntersectionObserver
+      // fires whenever the target gains or loses layout visibility, which covers
+      // both `display: none` ancestors and zero-height clipping.
+      if (typeof IntersectionObserver !== 'undefined') {
+          if (this._inputVisibilityObserver) this._inputVisibilityObserver.disconnect();
+          this._inputVisibilityObserver = new IntersectionObserver((entries) => {
+              for (const entry of entries) {
+                  const visible = entry.isIntersecting
+                        && getComputedStyle(this.targetInput).visibility !== 'hidden';
+
+                  // Keep the trigger button in sync with its input's visibility
+                  if (this.triggerBtn) {
+                      if (visible) {
+                          this.triggerBtn.style.display = '';
+                          this._positionTrigger();   // ← refresh coordinates
+                      } else {
+                          this.triggerBtn.style.display = 'none';
+                      }
+                  }
+
+                  // The popup is teleported to <body>, so it won't be hidden by
+                  // the same ancestor. Close it explicitly if it's open.
+                  if (!visible && this._isVisible) {
+                      this.hide(false);
+                  }
+              }
+          }, { threshold: 0 });
+          this._inputVisibilityObserver.observe(this.targetInput);
+      }
 
       // Reposition on focus — input may have moved since last render
       this.targetInput.addEventListener('focus', () => this._positionTrigger());
@@ -2856,6 +2888,10 @@
       if (this._focusTrapHandler) {
         document.removeEventListener('keydown', this._focusTrapHandler);
         this._focusTrapHandler = null;
+      }
+      if (this._inputVisibilityObserver) {
+          this._inputVisibilityObserver.disconnect();
+          this._inputVisibilityObserver = null;
       }
       if (this._faceResizeObserver) {
         this._faceResizeObserver.disconnect();
