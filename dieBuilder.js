@@ -346,7 +346,10 @@
       width: '80vw',
       maxHeight: '80vh',
       closeOnOutsideClick: true,
-      closeOnEscape: true
+      closeOnEscape: true,
+      placement: 'bottom',
+      offset: 8,
+      repositionOnOverflow: true 
     },
     validator: null
   };
@@ -412,6 +415,9 @@
      * @param {string} [config.popup.maxHeight='80vh']
      * @param {boolean} [config.popup.closeOnOutsideClick=true]
      * @param {boolean} [config.popup.closeOnEscape=true]
+     * @param {'top'|'bottom'|'left'|'right'} [config.popup.placement='bottom']
+     * @param {number} [config.popup.offset=8]
+     * @param {boolean} [config.popup.repositionOnOverflow=true]
      * @param {CustomValidator} [config.validator=null]
      *
      * @example
@@ -446,6 +452,7 @@
       this._lastSyncedHeight = 0;
       this._initialHeightSet = false;
       this._instanceId = 'db-' + Math.random().toString(36).slice(2, 9);
+      this._resolvedPlacement = null;
 
       if (this.config.callbacks.onNotationChange && !this.config.callbacks.onChange) {
         this.config.callbacks.onChange = this.config.callbacks.onNotationChange;
@@ -2094,24 +2101,118 @@
     // ============================================================
     // 5o. POPUP POSITIONING
     // ============================================================
+    /**
+     * Position the popup relative to the target input.
+     *
+     * Resolves a preferred side from `config.popup.placement` and checks whether
+     * the popup fits there. If not, it falls back to the opposite side, then to
+     * the first side that fits, and finally clamps to the viewport margins as a
+     * last resort. The gap between input and popup is `config.popup.offset`.
+     *
+     * @returns {'top'|'bottom'|'left'|'right'} The side the popup actually used.
+     * @private
+     */
     _positionPopup() {
-      if (!this.targetInput || !this.popupContainer) return;
-      const rect = this.targetInput.getBoundingClientRect();
-      const winW = window.innerWidth;
-      const winH = window.innerHeight;
-      const popup = this.popupContainer;
+      if (!this.targetInput || !this.popupContainer) return 'bottom';
+
+      const rect   = this.targetInput.getBoundingClientRect();
+      const popup  = this.popupContainer;
+      const winW   = window.innerWidth;
+      const winH   = window.innerHeight;
+      const margin = 10;                        // min distance from viewport edges
+      const gap = this.config.popup.offset ?? 8;  // gap between input and popup
+
+      // --- 1. Resolve desired size -----------------------------------------
       const popupW = Math.min(winW * 0.8, 800);
       const popupH = Math.min(winH * 0.8, 600);
 
-      popup.style.width = popupW + 'px';
+      popup.style.width     = popupW + 'px';
       popup.style.maxHeight = popupH + 'px';
 
-      let left = rect.left + (rect.width - popupW) / 2;
-      left = Math.max(10, Math.min(left, winW - popupW - 10));
-      let top = rect.bottom + 8;
-      if (top + popupH > winH - 10) top = rect.top - popupH - 8;
-      popup.style.left = left + 'px';
-      popup.style.top = top + 'px';
+      // --- 2. Compute candidate coordinates for each side ------------------
+      const candidates = {
+        bottom: {
+          top:  rect.bottom + gap,
+          left: rect.left + (rect.width - popupW) / 2
+        },
+        top: {
+          top:  rect.top - popupH - gap,
+          left: rect.left + (rect.width - popupW) / 2
+        },
+        right: {
+          top:  rect.top + (rect.height - popupH) / 2,
+          left: rect.right + gap
+        },
+        left: {
+          top:  rect.top + (rect.height - popupH) / 2,
+          left: rect.left - popupW - gap
+        }
+      };
+
+      // --- 3. Try preferred side, then opposite, then any that fits --------
+      const preferred = this.config.popup.placement || 'bottom';
+      const opposite  = { top: 'bottom', bottom: 'top', left: 'right', right: 'left' }[preferred];
+      const order = this.config.popup.repositionOnOverflow
+                    ? [preferred, opposite, 'bottom', 'top', 'left', 'right']
+                    : [preferred];
+
+      let chosen     = null;
+      let chosenSide = preferred;
+
+      for (const side of order) {
+        if (!candidates[side]) continue;
+        const { top, left } = candidates[side];
+
+        const fitsHorizontally = left >= margin && left + popupW <= winW - margin;
+        const fitsVertically   = top  >= margin && top  + popupH <= winH - margin;
+
+        if (fitsHorizontally && fitsVertically) {
+          chosen     = { top, left };
+          chosenSide = side;
+          break;
+        }
+      }
+
+      // --- 4. Fallback: use preferred side, then clamp to viewport ---------
+      if (!chosen) {
+        const fallback = candidates[preferred] || candidates.bottom;
+        chosen     = { top: fallback.top, left: fallback.left };
+        chosenSide = candidates[preferred] ? preferred : 'bottom';
+      }
+
+      chosen.left = Math.max(margin, Math.min(chosen.left, winW - popupW - margin));
+      chosen.top  = Math.max(margin, Math.min(chosen.top,  winH - popupH - margin));
+
+      popup.style.left = chosen.left + 'px';
+      popup.style.top  = chosen.top  + 'px';
+
+      // Expose the resolved side for styling hooks / consumers.
+      popup.setAttribute('data-placement', chosenSide);
+      this._resolvedPlacement = chosenSide;
+
+      return chosenSide;
+    }
+
+    /**
+     * Return the side the popup was last positioned on.
+     *
+     * This is the *resolved* placement, which may differ from
+     * `config.popup.placement` if the preferred side didn't fit and
+     * `config.popup.repositionOnOverflow` allowed the popup to move. Returns
+     * `null` before the popup has been shown for the first time.
+     *
+     * Mirrors the `data-placement` attribute set on the popup container, and
+     * is useful when you need to read the value from JS — for example, to
+     * draw your own arrow or to log which side ended up being used.
+     *
+     * @returns {'top'|'bottom'|'left'|'right'|null}
+     *
+     * @example
+     * builder.show();
+     * console.log(builder.getResolvedPlacement()); // 'right'
+     */
+    getResolvedPlacement() {
+      return this._resolvedPlacement;
     }
 
     // ============================================================

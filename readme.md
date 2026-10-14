@@ -37,6 +37,7 @@ builder.setConfig({
   - [Rule reference](#rule-reference)
   - [API reference](#diebuilder-api-reference)
   - [Configuration reference](#diebuilder-configuration-reference)
+  - [Popup Positioning](#popup-positioning)
   - [Theming](#theming)
   - [Validation](#validation)
   - [Examples](#diebuilder-examples)
@@ -76,7 +77,7 @@ module, AMD module, or plain `<script>` global.
 
 - **Complete rule set** — keep, drop, explode, compounding, penetrating,
   reroll, reroll-once, sort, criticals, target numbers, failures.
-- **Two modes** — a standalone panel, or a popup attached to any `<input>`.
+- **Two modes** — a standalone panel, or a popup attached to any `<input>`, anchorable to any side with automatic overflow repositioning.
 - **Live notation preview** — the output string updates as you edit.
 - **Inline validation** — field-level highlighting and per-group banners,
   with a public `validate()` API for programmatic use.
@@ -427,6 +428,24 @@ Boolean shortcut.
 
 ---
 
+### `builder.getResolvedPlacement() → 'top' | 'bottom' | 'left' | 'right' | null`
+
+Returns the side the popup was **actually** placed on. This may differ from
+the configured `popup.placement` if the preferred side didn't fit and
+`popup.repositionOnOverflow` allowed the popup to move. Returns `null`
+before the popup has been shown for the first time.
+
+Mirrors the `data-placement` attribute set on the popup container — the two
+are always in sync. Useful when you need to read the value from JS, for
+example to draw a custom arrow pointing at the input.
+
+```js
+builder.show();
+console.log(builder.getResolvedPlacement());  // 'right'
+```
+
+---
+
 ### `builder.destroy() → this`
 
 Tears down the instance: removes the popup, the trigger button, event
@@ -518,7 +537,68 @@ compatibility.
 | `width` | `string` | `'80vw'` | Popup width (clamped to `800px`) |
 | `maxHeight` | `string` | `'80vh'` | Popup max height (clamped to `600px`) |
 | `closeOnOutsideClick` | `boolean` | `true` | |
-| `closeOnEscape` | `boolean` | `true` | |
+| `closeOnEscape` | `boolean` | `true` |  |
+| `placement` | `'top' \| 'bottom' \| 'left' \| 'right'` | `'bottom'` | The side of the input the popup should be anchored to. |
+| `offset` | `number` | `8` | Gap in pixels between the anchoring element and the popup. |
+| `repositionOnOverflow` | `boolean` | `true` | Whether the popup may move to a different side when the preferred one doesn't fit in the viewport. |
+
+
+---
+
+## Popup Positioning
+By default, the popup opens centred below the target input. You can anchor it to any side of the input, control the gap between them, and decide whether the builder is allowed to move the popup when the preferred side doesn't fit on screen.
+
+### Options
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `placement` | `'top' \| 'bottom' \| 'left' \| 'right'` | `'bottom'` | The side of the input the popup should be anchored to. |
+| `offset` | `number` | `8` | Gap in pixels between the anchoring element and the popup. |
+| `repositionOnOverflow` | `boolean` | `true` | Whether the popup may move to a different side when the preferred one doesn't fit in the viewport. |
+
+### `placement`
+'bottom' and 'top' centre the popup horizontally on the input. 'left' and 'right' centre it vertically on the input and place it to the side.
+```js
+new DieBuilder({
+  popup: { placement: 'right' }
+}).attachTo('#notation-input');
+```
+
+### `repositionOnOverflow`
+When `true` (the default), the popup is placed on the requested side if it fits. If it doesn't, the builder tries the **opposite side first**, then **each remaining side in turn**, and finally **clamps the popup to the viewport margins** so it never renders off-screen. This means the requested placement is a preference, not a guarantee.
+
+When `false`, the popup is locked to the requested side. It will still be clamped to the viewport if the side would otherwise push it off-screen, but it will never move to a different side. Use this when the popup's position relative to the input is semantically meaningful. For example, when you're drawing your own arrow between them.
+```js
+// Popup always sits above the input, even if the input is near the top
+// of the viewport. It will overlap the input rather than moving below.
+new DieBuilder({
+  popup: {
+    placement: 'top',
+    repositionOnOverflow: false
+  }
+}).attachTo('#notation-input');
+```
+
+### Updating Placement at Runtime
+`placement` and `repositionOnOverflow` can be changed after construction. The next time the popup is shown or repositioned, the new values take effect:
+```js
+builder.setConfig({ popup: { placement: 'left' } });
+builder.show();
+```
+
+### Styling per Side
+The popup container receives a `data-placement` attribute reflecting the side it was **actually** placed on, which may differ from the configured `placement` if `repositionOnOverflow` moved it. Use it to draw arrows or adjust corner radii per side:
+```js
+.die-builder-popup[data-placement="top"] .db-face-card {
+  border-bottom-left-radius: 4px;
+  border-bottom-right-radius: 4px;
+}
+
+.die-builder-popup[data-placement="right"] .db-face-card {
+  border-top-left-radius: 4px;
+  border-bottom-left-radius: 4px;
+}
+```
+The same value is available from JS via `builder.getResolvedPlacement()`; useful if you're drawing your own arrow, or logging which side the popup landed on.
 
 ---
 
